@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """行情获取 & 订单执行模块"""
 import logging
+from typing import Optional
 
 import ccxt
 import pandas as pd
