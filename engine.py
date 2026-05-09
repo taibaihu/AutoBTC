@@ -149,13 +149,13 @@ class FuturesEngine:
         """市价开多 (amount 为 USDT 金额, 自动换算合约数)"""
         price = self.get_current_price(symbol) or self.get_current_price(self._symbol)
         quantity = self.calc_contract_amount(amount, price)
-        return self.exchange.create_market_buy_order(self._symbol, quantity)
+        return self.exchange.create_market_buy_order(self._symbol, quantity, {"positionSide": "LONG"})
 
     def market_sell(self, symbol: str, amount: float) -> dict:
         """市价平多 (amount 为 USDT 金额, 自动换算合约数)"""
         price = self.get_current_price(symbol) or self.get_current_price(self._symbol)
         quantity = self.calc_contract_amount(amount, price)
-        return self.exchange.create_market_sell_order(self._symbol, quantity)
+        return self.exchange.create_market_sell_order(self._symbol, quantity, {"positionSide": "LONG", "reduceOnly": True})
 
     def get_current_price(self, symbol: str) -> float:
         """获取当前实时价格"""

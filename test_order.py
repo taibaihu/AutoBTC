@@ -90,7 +90,7 @@ def main():
         engine.exchange.create_order(
             CONTRACT_SYMBOL, "TAKE_PROFIT_LIMIT", "sell", size,
             price=tp_price,
-            params={"stopPrice": tp_price, "reduceOnly": True, "timeInForce": "GTC"},
+            params={"stopPrice": tp_price, "reduceOnly": True, "positionSide": "LONG", "timeInForce": "GTC"},
         )
         logger.info(f"止盈单已提交 ✅")
     except Exception as e:
@@ -101,7 +101,7 @@ def main():
         engine.exchange.create_order(
             CONTRACT_SYMBOL, "STOP_LOSS_LIMIT", "sell", size,
             price=sl_price,
-            params={"stopPrice": sl_price, "reduceOnly": True, "timeInForce": "GTC"},
+            params={"stopPrice": sl_price, "reduceOnly": True, "positionSide": "LONG", "timeInForce": "GTC"},
         )
         logger.info(f"止损单已提交 ✅")
     except Exception as e:

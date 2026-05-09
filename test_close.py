@@ -37,7 +37,7 @@ def main():
     # 3. 市价平仓
     logger.info(f"正在市价平仓 {size} BTC...")
     try:
-        order = engine.exchange.create_market_sell_order(CONTRACT_SYMBOL, size)
+        order = engine.exchange.create_market_sell_order(CONTRACT_SYMBOL, size, {"positionSide": "LONG", "reduceOnly": True})
         logger.info(f"平仓成功 ✅ | 订单ID: {order.get('id', 'N/A')}")
     except Exception as e:
         logger.error(f"平仓失败: {e}")
