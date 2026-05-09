@@ -123,19 +123,21 @@ class FuturesEngine:
         except Exception:
             return 0.0
 
-    def get_position(self) -> dict:
-        """查询当前持仓，返回 {size, entry_price, unrealized_pnl} 或 None"""
+    def get_position(self) -> Optional[dict]:
+        """查询当前多头持仓，返回 {size, entry_price, unrealized_pnl} 或 None"""
         try:
-            pos = self.exchange.fetch_position(self._symbol)
-            size = float(pos.get("contracts", 0) or 0)
-            if size == 0:
-                return None
-            return {
-                "size": size,
-                "entry_price": float(pos["entryPrice"]),
-                "unrealized_pnl": float(pos["unrealizedPnl"]),
-            }
-        except Exception:
+            positions = self.exchange.fetch_positions([self._symbol])
+            for p in positions:
+                size = float(p.get("contracts", 0) or 0)
+                if size > 0 and p.get("side") == "long":
+                    return {
+                        "size": size,
+                        "entry_price": float(p["entryPrice"]),
+                        "unrealized_pnl": float(p["unrealizedPnl"]),
+                    }
+            return None
+        except Exception as e:
+            logger.warning(f"查询持仓失败: {e}")
             return None
 
     def calc_contract_amount(self, usdt_amount: float, price: float) -> float:
