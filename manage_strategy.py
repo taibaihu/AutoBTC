@@ -21,16 +21,17 @@ def cmd_list(args):
         print("暂无策略")
         return
 
-    header = f"{'ID':<4} {'用户':<14} {'类型':<12} {'周期':<6} {'止盈':<6} {'止损':<6} {'仓位':<8} {'模拟':<5} {'状态':<5} {'名称'}"
+    header = f"{'ID':<4} {'用户':<14} {'类型':<12} {'周期':<6} {'杠杆':<6} {'止盈':<6} {'止损':<6} {'仓位':<8} {'模拟':<5} {'状态':<5} {'名称'}"
     print(header)
-    print("-" * 90)
+    print("-" * 95)
     for s in strategies:
+        lev = f"{s.leverage}x"
         tp = f"{s.min_profit_rate*100:.1f}%"
         sl = f"{s.max_loss_rate*100:.1f}%"
         pos = f"{s.max_position_usdt:.0f}U"
         paper = "模拟" if s.paper_trading else "实盘"
         status = "启用" if s.enabled else "禁用"
-        print(f"{s.id:<4} {s.user_id:<14} {s.strategy_type:<12} {s.timeframe:<6} {tp:<6} {sl:<6} {pos:<8} {paper:<5} {status:<5} {s.name}")
+        print(f"{s.id:<4} {s.user_id:<14} {s.strategy_type:<12} {s.timeframe:<6} {lev:<6} {tp:<6} {sl:<6} {pos:<8} {paper:<5} {status:<5} {s.name}")
 
 
 def cmd_view(args):
@@ -46,6 +47,7 @@ def cmd_view(args):
         "enabled": cfg.enabled,
         "params": cfg.params,
         # 风控参数（独立字段）
+        "leverage": cfg.leverage,
         "max_position_usdt": cfg.max_position_usdt,
         "daily_loss_limit": cfg.daily_loss_limit,
         "max_trades_per_day": cfg.max_trades_per_day,
@@ -96,20 +98,23 @@ def cmd_param(args):
                 print(f"格式错误: '{kv}'，需要 key=value 格式", file=sys.stderr)
                 sys.exit(1)
             key, val = kv.split("=", 1)
-            val = float(val)  # 风控参数全是数字
-            if key == "max_position_usdt":
-                cfg.max_position_usdt = val
-            elif key == "daily_loss_limit":
-                cfg.daily_loss_limit = val
-            elif key == "max_trades_per_day":
-                cfg.max_trades_per_day = int(val)
-            elif key == "min_profit_rate":
-                cfg.min_profit_rate = val
-            elif key == "max_loss_rate":
-                cfg.max_loss_rate = val
+            if key == "leverage":
+                cfg.leverage = int(val)
             else:
-                print(f"未知风控参数: {key}", file=sys.stderr)
-                sys.exit(1)
+                val = float(val)
+                if key == "max_position_usdt":
+                    cfg.max_position_usdt = val
+                elif key == "daily_loss_limit":
+                    cfg.daily_loss_limit = val
+                elif key == "max_trades_per_day":
+                    cfg.max_trades_per_day = int(val)
+                elif key == "min_profit_rate":
+                    cfg.min_profit_rate = val
+                elif key == "max_loss_rate":
+                    cfg.max_loss_rate = val
+                else:
+                    print(f"未知风控参数: {key}", file=sys.stderr)
+                    sys.exit(1)
     elif args.group == "strategy":
         for kv in args.set:
             if "=" not in kv:
@@ -166,7 +171,7 @@ def cmd_apply(args):
     from config import (
         SYMBOL, TIMEFRAME, STRATEGY_NAME, PAPER_TRADING,
         SHORT_MA, LONG_MA, MAX_POSITION_USDT,
-        MIN_PROFIT_RATE, MAX_LOSS_RATE,
+        MIN_PROFIT_RATE, MAX_LOSS_RATE, LEVERAGE,
     )
     print(f"SYMBOL          = {SYMBOL}")
     print(f"TIMEFRAME        = {TIMEFRAME}")
@@ -177,6 +182,7 @@ def cmd_apply(args):
     print(f"MAX_POSITION_USDT = {MAX_POSITION_USDT}")
     print(f"MIN_PROFIT_RATE  = {MIN_PROFIT_RATE}")
     print(f"MAX_LOSS_RATE    = {MAX_LOSS_RATE}")
+    print(f"LEVERAGE          = {LEVERAGE}x")
 
 
 def main():

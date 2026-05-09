@@ -18,6 +18,7 @@ class RiskManager:
     max_trades_per_day: int = 20
     min_profit_rate: float = 0.01
     max_loss_rate: float = 0.02
+    leverage: int = 100
 
     daily_pnl: float = 0.0
     trade_count: int = 0
@@ -35,6 +36,10 @@ class RiskManager:
             self.trade_count = 0
             self._reset_day = today
 
+    def _position_value(self) -> float:
+        """仓位名义价值 = 保证金 × 杠杆"""
+        return self.max_position_usdt * self.leverage
+
     def can_trade(self) -> tuple[bool, str]:
         """返回 (是否可以交易, 原因)"""
         self._check_day_reset()
@@ -46,10 +51,10 @@ class RiskManager:
         return True, "OK"
 
     def calc_pnl(self, current_price: float) -> float:
-        """统一盈亏计算，避免调用方重复手算"""
+        """统一盈亏计算（含杠杆），避免调用方重复手算"""
         if not self._position:
             return 0.0
-        return (current_price - self._entry_price) / self._entry_price * self.max_position_usdt
+        return (current_price - self._entry_price) / self._entry_price * self._position_value()
 
     def record_trade(self, pnl: float, exit_price: float = 0.0):
         """记录一笔成交盈亏，持久化到 MySQL"""

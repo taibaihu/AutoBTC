@@ -8,13 +8,13 @@ import logging
 import pandas as pd
 
 from config import (
-    SYMBOL, TIMEFRAME, LIMIT, SHORT_MA, LONG_MA,
+    SYMBOL, CONTRACT_SYMBOL, TIMEFRAME, LIMIT, SHORT_MA, LONG_MA,
     MAX_POSITION_USDT, DAILY_LOSS_LIMIT, MAX_TRADES_PER_DAY,
-    MIN_PROFIT_RATE, MAX_LOSS_RATE,
+    MIN_PROFIT_RATE, MAX_LOSS_RATE, LEVERAGE,
     STRATEGY_NAME, STRATEGY_KWARGS, PAPER_TRADING,
     RSI_TIMEFRAMES, RSI_PERIOD, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_ALERT_COOLDOWN,
 )
-from engine import BinanceEngine, OKXEngine
+from engine import FuturesEngine, OKXEngine
 from strategy import BUY, SELL, HOLD, STRATEGIES, calc_rsi_series, calc_macd, calc_kdj, check_buy_conditions
 from risk_manager import RiskManager
 from notifier import Notifier
@@ -63,7 +63,8 @@ def main(user_id: str = "default"):
     cfg = load_strategy(user_id)
     apply_to_config(cfg)
 
-    engine = BinanceEngine()
+    engine = FuturesEngine(leverage=LEVERAGE)
+    engine.set_leverage()
     engine_okx = OKXEngine()
 
     strategy_cls = STRATEGIES[cfg.strategy_type]
@@ -75,24 +76,25 @@ def main(user_id: str = "default"):
         max_trades_per_day=MAX_TRADES_PER_DAY,
         min_profit_rate=MIN_PROFIT_RATE,
         max_loss_rate=MAX_LOSS_RATE,
+        leverage=LEVERAGE,
     )
     notifier = Notifier()
 
-    logger.info(f"量化引擎启动 | 用户: {user_id} | {SYMBOL} | {TIMEFRAME} | 策略: {STRATEGY_NAME}")
+    logger.info(f"🚀 合约引擎启动 | 用户: {user_id} | {CONTRACT_SYMBOL} | {TIMEFRAME} | {LEVERAGE}x | 策略: {STRATEGY_NAME}")
     logger.info(f"RSI监控启用 | 周期: {RSI_TIMEFRAMES} | 超买: >{RSI_OVERBOUGHT} | 超卖: <{RSI_OVERSOLD}")
-    notifier.send(f"<b>量化引擎启动</b>\n用户: {user_id}\n{SYMBOL} {TIMEFRAME}\n策略: {STRATEGY_NAME}")
+    notifier.send(f"<b>🚀 合约引擎启动</b>\n用户: {user_id}\n{CONTRACT_SYMBOL} {TIMEFRAME} {LEVERAGE}x\n策略: {STRATEGY_NAME}")
 
     last_rsi_alert = 0.0
 
     while True:
         try:
-            # 1. 获取行情
-            df = engine.fetch_ohlcv(SYMBOL, TIMEFRAME, LIMIT)
+            # 1. 获取合约行情
+            df = engine.fetch_ohlcv(CONTRACT_SYMBOL, TIMEFRAME, LIMIT)
             price = float(df["close"].iloc[-1])
 
-            # 1b. 获取两平台实时现价（用于对比）
+            # 1b. 获取实时价格对比（合约 vs OKX 现货）
             try:
-                live_binance = engine.get_current_price(SYMBOL)
+                live_binance = engine.get_current_price(CONTRACT_SYMBOL)
             except Exception:
                 live_binance = None
             try:
@@ -101,9 +103,9 @@ def main(user_id: str = "default"):
                 live_okx = None
             if live_binance and live_okx:
                 spread = live_binance - live_okx
-                logger.info(f"🔥 实时价 B:{live_binance:.2f}  O:{live_okx:.2f}  Δ:{spread:+.2f}")
+                logger.info(f"🔥 合约价 B:{live_binance:.2f}  O现货:{live_okx:.2f}  Δ:{spread:+.2f}")
             elif live_binance:
-                logger.info(f"🔥 实时价 B:{live_binance:.2f}  O:获取失败")
+                logger.info(f"🔥 合约价 B:{live_binance:.2f}  O现货:获取失败")
 
             # 2. 持仓检查 —— 止盈/止损
             if risk.position:
@@ -111,12 +113,12 @@ def main(user_id: str = "default"):
                 if reason:
                     pnl = risk.calc_pnl(price)
                     risk.record_trade(pnl, exit_price=price)
-                    logger.info(f"💰 {reason} | 当前价: {price:.4f} | 盈亏: {pnl:+.2f}")
+                    logger.info(f"💰 {reason} | 当前价: {price:.4f} | 盈亏: {pnl:+.2f} ({LEVERAGE}x)")
                     notifier.send(
                         f"<b>{reason}</b>\n"
-                        f"交易对: {SYMBOL}\n"
+                        f"交易对: {CONTRACT_SYMBOL}\n"
                         f"价格: {price:.4f}\n"
-                        f"盈亏: {pnl:+.2f} USDT"
+                        f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)"
                     )
 
             # 3. 生成信号
@@ -137,33 +139,35 @@ def main(user_id: str = "default"):
                 ok, reason = risk.can_trade()
                 if ok:
                     risk.open_position(price)
-                    label = "🟢 买入开仓(模拟)" if PAPER_TRADING else "🟢 买入开仓"
-                    logger.info(f"{label} | {price:.4f}")
+                    label = "🟢 合约开多(模拟)" if PAPER_TRADING else "🟢 合约开多"
+                    pos_value = MAX_POSITION_USDT * LEVERAGE
+                    logger.info(f"{label} | {price:.4f} | 保证金:{MAX_POSITION_USDT}U | {LEVERAGE}x | 名义价值:{pos_value:.2f}U")
                     notifier.send(
                         f"<b>{label}</b>\n"
-                        f"{SYMBOL} @ {price:.4f}\n"
-                        f"金额: {MAX_POSITION_USDT} USDT"
+                        f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
+                        f"保证金: {MAX_POSITION_USDT} USDT | {LEVERAGE}x\n"
+                        f"名义价值: {pos_value:.2f} USDT"
                     )
                     if not PAPER_TRADING:
-                        engine.market_buy(SYMBOL, MAX_POSITION_USDT)
+                        engine.market_buy(CONTRACT_SYMBOL, MAX_POSITION_USDT)
                 else:
                     logger.warning(f"⛔ 风控拦截: {reason}")
 
             elif signal == SELL and risk.position:
                 pnl = risk.calc_pnl(price)
                 risk.record_trade(pnl, exit_price=price)
-                label = "🔴 卖出平仓(模拟)" if PAPER_TRADING else "🔴 卖出平仓"
+                label = "🔴 合约平多(模拟)" if PAPER_TRADING else "🔴 合约平多"
                 logger.info(f"{label} | {price:.4f} | 盈亏: {pnl:+.2f}")
                 notifier.send(
                     f"<b>{label}</b>\n"
-                    f"{SYMBOL} @ {price:.4f}\n"
-                    f"盈亏: {pnl:+.2f} USDT\n"
+                    f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
+                    f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)\n"
                     f"统计: 今日{risk.trade_count}笔 / 盈亏{risk.daily_pnl:+.2f}"
                 )
                 if not PAPER_TRADING:
-                    engine.market_sell(SYMBOL, MAX_POSITION_USDT / risk._entry_price)
+                    engine.market_sell(CONTRACT_SYMBOL, MAX_POSITION_USDT)
 
-            # ===== 多周期指标监控（Binance，实时价参与）=====
+            # ===== 多周期指标监控（合约数据，实时价参与）=====
             def _calc_indicators(exchange_obj, main_tf_df=None):
                 """获取 RSI(多周期) + MACD + KDJ，最后一根用实时价更新 close/high/low"""
                 rsi_res = {}
@@ -175,18 +179,19 @@ def main(user_id: str = "default"):
                     if exchange_obj is engine and tf == TIMEFRAME and df is not None:
                         df_tf = df.copy()
                     else:
-                        df_tf = exchange_obj.fetch_ohlcv(SYMBOL, tf, need)
+                        df_tf = exchange_obj.fetch_ohlcv(CONTRACT_SYMBOL, tf, need)
 
                     close = df_tf["close"].copy()
                     high = df_tf["high"].copy()
                     low = df_tf["low"].copy()
                     try:
-                        live = exchange_obj.get_current_price(SYMBOL)
-                        close.iloc[-1] = live
-                        if live > high.iloc[-1]:
-                            high.iloc[-1] = live
-                        if live < low.iloc[-1]:
-                            low.iloc[-1] = live
+                        live = exchange_obj.get_current_price(CONTRACT_SYMBOL)
+                        if live:
+                            close.iloc[-1] = live
+                            if live > high.iloc[-1]:
+                                high.iloc[-1] = live
+                            if live < low.iloc[-1]:
+                                low.iloc[-1] = live
                     except Exception:
                         pass
 
@@ -195,7 +200,6 @@ def main(user_id: str = "default"):
                     if tf == TIMEFRAME:
                         macd_res = calc_macd(close)
                         kdj_res = calc_kdj(close, high, low)
-                        # 回写实时价供 check_buy_conditions 使用
                         df_tf["close"] = close
                         df_tf["high"] = high
                         df_tf["low"] = low
@@ -212,7 +216,7 @@ def main(user_id: str = "default"):
                     parts.append(f"K:{kdj['k']:.1f} D:{kdj['d']:.1f} J:{kdj['j']:.1f}")
                 return " | ".join(parts)
 
-            # Binance 指标（含实时价更新后的 df）
+            # 合约指标（含实时价更新后的 df）
             rsi_values, macd_data, kdj_data, live_df = _calc_indicators(engine, df)
 
             # 日志输出
@@ -226,7 +230,7 @@ def main(user_id: str = "default"):
                     logger.info(f"🚨 {buy_msg}")
                     notifier.send(
                         f"<b>🟢 买入预警</b>\n"
-                        f"{SYMBOL} @ {price:.2f}\n"
+                        f"{CONTRACT_SYMBOL} @ {price:.2f}\n"
                         f"{buy_msg}\n"
                         f"MACD:{macd_data['macd']:.1f} K:{kdj_data['k']:.1f} J:{kdj_data['j']:.1f}"
                     )

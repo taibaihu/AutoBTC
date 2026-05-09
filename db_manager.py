@@ -115,12 +115,17 @@ def init_database():
             max_trades_per_day  INT NOT NULL DEFAULT 20,
             min_profit_rate     DECIMAL(10, 4) NOT NULL DEFAULT 0.0100,
             max_loss_rate       DECIMAL(10, 4) NOT NULL DEFAULT 0.0200,
+            leverage            INT NOT NULL DEFAULT 100 COMMENT '合约杠杆倍数',
             created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_strategy (strategy_id),
             CONSTRAINT fk_risk_strategy FOREIGN KEY (strategy_id) REFERENCES strategies(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='策略风控参数表'
     """)
+
+    # 迁移：为已有表加 leverage 列 + 补默认值
+    _add_column_if_not_exists("strategy_risk_params", "leverage", "INT NOT NULL DEFAULT 100 COMMENT '合约杠杆倍数' AFTER max_loss_rate")
+    migrate_leverage_column()
 
     # 迁移旧数据：将 strategies.risk_params JSON 中的数据复制到新表（仅一次）
     migrate_risk_params()
@@ -152,8 +157,8 @@ def migrate_risk_params():
             rp = {}
         execute(
             """INSERT INTO strategy_risk_params
-               (strategy_id, max_position_usdt, daily_loss_limit, max_trades_per_day, min_profit_rate, max_loss_rate)
-               VALUES (%s, %s, %s, %s, %s, %s)""",
+               (strategy_id, max_position_usdt, daily_loss_limit, max_trades_per_day, min_profit_rate, max_loss_rate, leverage)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
             (
                 row["id"],
                 rp.get("max_position_usdt", 100),
@@ -161,10 +166,37 @@ def migrate_risk_params():
                 rp.get("max_trades_per_day", 20),
                 rp.get("min_profit_rate", 0.01),
                 rp.get("max_loss_rate", 0.02),
+                rp.get("leverage", 100),
             ),
             db=DB_NAME,
         )
-    logger.info(f"已迁移 {len(rows)} 条策略的风控参数到 strategy_risk_params 表")
+        logger.info(f"已迁移 {len(rows)} 条策略的风控参数到 strategy_risk_params 表")
+
+
+def _add_column_if_not_exists(table: str, column: str, definition: str):
+    """幂等地给表加列"""
+    col_check = fetch_one(
+        "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME=%s",
+        (DB_NAME, table, column), db=DB_NAME,
+    )
+    if col_check:
+        return
+    try:
+        execute(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}", db=DB_NAME)
+        logger.info(f"表 {table} 已添加列 {column}")
+    except Exception as e:
+        logger.warning(f"添加列 {column} 失败: {e}")
+
+
+def migrate_leverage_column():
+    """为已有 strategy_risk_params 记录补全 leverage 字段（新增列时使用）"""
+    col_check = fetch_one(
+        "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME='strategy_risk_params' AND COLUMN_NAME='leverage'",
+        (DB_NAME,), db=DB_NAME,
+    )
+    if not col_check:
+        return  # 列还不存在，说明还没重建表
+    execute("UPDATE strategy_risk_params SET leverage = 100 WHERE leverage IS NULL OR leverage = 0", db=DB_NAME)
 
 
 def insert_strategy_defaults(user_id: str = "default"):
@@ -180,7 +212,7 @@ def insert_strategy_defaults(user_id: str = "default"):
     from config import (
         SHORT_MA, LONG_MA, SYMBOL, TIMEFRAME, LIMIT,
         MAX_POSITION_USDT, DAILY_LOSS_LIMIT, MAX_TRADES_PER_DAY,
-        MIN_PROFIT_RATE, MAX_LOSS_RATE, PAPER_TRADING,
+        MIN_PROFIT_RATE, MAX_LOSS_RATE, LEVERAGE, PAPER_TRADING,
         STRATEGY_NAME,
         RSI_TIMEFRAMES, RSI_PERIOD, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_ALERT_COOLDOWN,
     )
@@ -218,12 +250,12 @@ def insert_strategy_defaults(user_id: str = "default"):
     if row:
         execute(
             """INSERT INTO strategy_risk_params
-               (strategy_id, max_position_usdt, daily_loss_limit, max_trades_per_day, min_profit_rate, max_loss_rate)
-               VALUES (%s, %s, %s, %s, %s, %s)""",
+               (strategy_id, max_position_usdt, daily_loss_limit, max_trades_per_day, min_profit_rate, max_loss_rate, leverage)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
             (
                 row["id"],
                 MAX_POSITION_USDT, DAILY_LOSS_LIMIT, MAX_TRADES_PER_DAY,
-                MIN_PROFIT_RATE, MAX_LOSS_RATE,
+                MIN_PROFIT_RATE, MAX_LOSS_RATE, LEVERAGE,
             ),
             db=DB_NAME,
         )

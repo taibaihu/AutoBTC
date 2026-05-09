@@ -12,9 +12,11 @@ API_KEY = os.getenv("BINANCE_API_KEY", "")
 SECRET_KEY = os.getenv("BINANCE_SECRET_KEY", "")
 
 # ===== 交易对 & 参数 =====
-SYMBOL = "BTC/USDT"          # 主交易对
+SYMBOL = "BTC/USDT"          # 主交易对（现货）
+CONTRACT_SYMBOL = "BTC/USDT:USDT"  # 合约交易对
 TIMEFRAME = "5m"             # K线周期: 1m, 5m, 15m, 1h, 4h, 1d
 LIMIT = 100                  # 获取K线根数
+LEVERAGE = 100               # 合约杠杆倍数
 
 # ===== 策略参数 =====
 SHORT_MA = 7                 # 短期均线周期

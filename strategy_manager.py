@@ -32,6 +32,7 @@ class StrategyConfig:
     max_trades_per_day: int = 20
     min_profit_rate: float = 0.01
     max_loss_rate: float = 0.02
+    leverage: int = 100
     user_id: str = "default"
     paper_trading: bool = True
     enabled: bool = True
@@ -52,6 +53,7 @@ class StrategyConfig:
             max_trades_per_day=int(row.get("max_trades_per_day") or 20),
             min_profit_rate=float(row.get("min_profit_rate") or 0.01),
             max_loss_rate=float(row.get("max_loss_rate") or 0.02),
+            leverage=int(row.get("leverage") or 100),
             user_id=row["user_id"],
             paper_trading=bool(row["paper_trading"]),
             enabled=bool(row["enabled"]),
@@ -65,7 +67,7 @@ def load_strategy(user_id: str = "default") -> StrategyConfig:
 
     row = fetch_one(
         """SELECT s.*, r.max_position_usdt, r.daily_loss_limit, r.max_trades_per_day,
-                  r.min_profit_rate, r.max_loss_rate
+                  r.min_profit_rate, r.max_loss_rate, r.leverage
            FROM strategies s
            LEFT JOIN strategy_risk_params r ON r.strategy_id = s.id
            WHERE s.user_id = %s AND s.enabled = 1
@@ -97,18 +99,19 @@ def save_strategy(cfg: StrategyConfig):
         # 更新 strategy_risk_params（不存在则插入）
         execute(
             """INSERT INTO strategy_risk_params
-               (strategy_id, max_position_usdt, daily_loss_limit, max_trades_per_day, min_profit_rate, max_loss_rate)
-               VALUES (%s, %s, %s, %s, %s, %s)
+               (strategy_id, max_position_usdt, daily_loss_limit, max_trades_per_day, min_profit_rate, max_loss_rate, leverage)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
                ON DUPLICATE KEY UPDATE
                max_position_usdt=VALUES(max_position_usdt),
                daily_loss_limit=VALUES(daily_loss_limit),
                max_trades_per_day=VALUES(max_trades_per_day),
                min_profit_rate=VALUES(min_profit_rate),
-               max_loss_rate=VALUES(max_loss_rate)""",
+               max_loss_rate=VALUES(max_loss_rate),
+               leverage=VALUES(leverage)""",
             (
                 cfg.id,
                 cfg.max_position_usdt, cfg.daily_loss_limit, cfg.max_trades_per_day,
-                cfg.min_profit_rate, cfg.max_loss_rate,
+                cfg.min_profit_rate, cfg.max_loss_rate, cfg.leverage,
             ),
         )
         logger.info(f"策略 '{cfg.name}' (id={cfg.id}) 已更新")
@@ -128,10 +131,10 @@ def save_strategy(cfg: StrategyConfig):
         if row:
             execute(
                 """INSERT INTO strategy_risk_params
-                   (strategy_id, max_position_usdt, daily_loss_limit, max_trades_per_day, min_profit_rate, max_loss_rate)
-                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                   (strategy_id, max_position_usdt, daily_loss_limit, max_trades_per_day, min_profit_rate, max_loss_rate, leverage)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
                 (row["id"], cfg.max_position_usdt, cfg.daily_loss_limit, cfg.max_trades_per_day,
-                 cfg.min_profit_rate, cfg.max_loss_rate),
+                 cfg.min_profit_rate, cfg.max_loss_rate, cfg.leverage),
             )
         logger.info(f"策略 '{cfg.name}' 已创建")
 
@@ -141,7 +144,7 @@ def list_strategies(enabled_only: bool = True) -> list[StrategyConfig]:
     where = "WHERE s.enabled = 1" if enabled_only else ""
     rows = fetch_all(f"""
         SELECT s.*, r.max_position_usdt, r.daily_loss_limit, r.max_trades_per_day,
-               r.min_profit_rate, r.max_loss_rate
+               r.min_profit_rate, r.max_loss_rate, r.leverage
         FROM strategies s
         LEFT JOIN strategy_risk_params r ON r.strategy_id = s.id
         {where}
@@ -179,6 +182,7 @@ def apply_to_config(cfg: StrategyConfig):
     cmod.MAX_TRADES_PER_DAY = cfg.max_trades_per_day
     cmod.MIN_PROFIT_RATE = cfg.min_profit_rate
     cmod.MAX_LOSS_RATE = cfg.max_loss_rate
+    cmod.LEVERAGE = cfg.leverage
 
     # RSI 参数
     rsi = cfg.rsi_params
