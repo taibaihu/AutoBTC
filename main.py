@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """量化交易框架 —— 入口"""
+import argparse
 import time
 import logging
 
@@ -16,6 +17,7 @@ from engine import BinanceEngine, OKXEngine
 from strategy import BUY, SELL, HOLD, STRATEGIES, calc_rsi_series, calc_macd, calc_kdj, check_buy_conditions
 from risk_manager import RiskManager
 from notifier import Notifier
+from strategy_manager import load_strategy, apply_to_config
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -55,11 +57,15 @@ def check_rsi_alert(rsi_values: dict, last_alert: float, notifier: Notifier) -> 
     return now
 
 
-def main():
+def main(user_id: str = "default"):
+    # 从 DB 加载策略配置并覆盖 config 模块变量
+    cfg = load_strategy(user_id)
+    apply_to_config(cfg)
+
     engine = BinanceEngine()
     engine_okx = OKXEngine()
 
-    strategy_cls = STRATEGIES[STRATEGY_NAME]
+    strategy_cls = STRATEGIES[cfg.strategy_type]
     strategy = strategy_cls(**STRATEGY_KWARGS)
 
     risk = RiskManager(
@@ -69,9 +75,9 @@ def main():
     )
     notifier = Notifier()
 
-    logger.info(f"量化引擎启动 | {SYMBOL} | {TIMEFRAME} | 策略: {STRATEGY_NAME}")
+    logger.info(f"量化引擎启动 | 用户: {user_id} | {SYMBOL} | {TIMEFRAME} | 策略: {STRATEGY_NAME}")
     logger.info(f"RSI监控启用 | 周期: {RSI_TIMEFRAMES} | 超买: >{RSI_OVERBOUGHT} | 超卖: <{RSI_OVERSOLD}")
-    notifier.send(f"<b>量化引擎启动</b>\n{SYMBOL} {TIMEFRAME}\n策略: {STRATEGY_NAME}")
+    notifier.send(f"<b>量化引擎启动</b>\n用户: {user_id}\n{SYMBOL} {TIMEFRAME}\n策略: {STRATEGY_NAME}")
 
     last_rsi_alert = 0.0
 
@@ -242,4 +248,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="量化交易框架")
+    parser.add_argument("--user", "-u", default="default", help="用户标识")
+    args = parser.parse_args()
+    main(user_id=args.user)

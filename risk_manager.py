@@ -5,68 +5,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-import pymysql
-from pymysql.constants import CLIENT
-
-from config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, SYMBOL
+from config import SYMBOL
+from db_manager import execute, init_database
 
 logger = logging.getLogger(__name__)
-
-
-def _get_conn(database: str = None):
-    """获取 MySQL 连接"""
-    return pymysql.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=database,
-        connect_timeout=5,
-        client_flag=CLIENT.MULTI_STATEMENTS,
-    )
-
-
-def _ensure_database_and_table():
-    """自动创建数据库和 trades 表（幂等）"""
-    try:
-        # 先连接 MySQL（不指定库）创建数据库
-        conn = _get_conn(database=None)
-        with conn.cursor() as cur:
-            cur.execute(f"CREATE DATABASE IF NOT EXISTS `{DB_NAME}` DEFAULT CHARSET utf8mb4")
-        conn.close()
-
-        # 再连到目标库创建表
-        conn = _get_conn(database=DB_NAME)
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS trades (
-                    id          INT AUTO_INCREMENT PRIMARY KEY,
-                    timestamp   DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    entry_price DECIMAL(20, 8),
-                    exit_price  DECIMAL(20, 8),
-                    pnl         DECIMAL(20, 8),
-                    symbol      VARCHAR(20)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """)
-        conn.commit()
-        conn.close()
-        logger.info(f"数据库 `{DB_NAME}` 及 trades 表已就绪")
-    except Exception as e:
-        logger.warning(f"数据库初始化失败: {e}")
-        raise
-
-
-def _execute(sql: str, params: tuple = ()) -> Optional[pymysql.cursors.Cursor]:
-    """执行 SQL 并自动提交"""
-    try:
-        conn = _get_conn(database=DB_NAME)
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            conn.commit()
-            return cur
-    except Exception as e:
-        logger.warning(f"数据库操作失败: {e}")
-        return None
 
 
 @dataclass
@@ -84,7 +26,7 @@ class RiskManager:
     _reset_day: str = field(default_factory=lambda: time.strftime("%Y-%m-%d"))
 
     def __post_init__(self):
-        _ensure_database_and_table()
+        init_database()
 
     def _check_day_reset(self):
         today = time.strftime("%Y-%m-%d")
@@ -114,7 +56,7 @@ class RiskManager:
         self.daily_pnl += pnl
         self.trade_count += 1
 
-        _execute(
+        execute(
             "INSERT INTO trades (entry_price, exit_price, pnl, symbol) VALUES (%s, %s, %s, %s)",
             (self._entry_price, exit_price, round(pnl, 4), SYMBOL),
         )
