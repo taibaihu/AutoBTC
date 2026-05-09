@@ -94,7 +94,6 @@ def init_database():
             symbol          VARCHAR(20) NOT NULL DEFAULT 'BTC/USDT',
             timeframe       VARCHAR(10) NOT NULL DEFAULT '5m',
             params          JSON COMMENT '策略专有参数',
-            risk_params     JSON COMMENT '风控参数',
             rsi_params      JSON COMMENT 'RSI多周期监控参数',
             user_id         VARCHAR(100) NOT NULL DEFAULT '' COMMENT '用户标识',
             paper_trading   TINYINT NOT NULL DEFAULT 1 COMMENT '1=模拟, 0=实盘',
@@ -106,7 +105,66 @@ def init_database():
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='策略配置表'
     """)
 
+    # strategy_risk_params 表（风控参数独立存放，每列清晰可见）
+    execute("""
+        CREATE TABLE IF NOT EXISTS strategy_risk_params (
+            id                  INT AUTO_INCREMENT PRIMARY KEY,
+            strategy_id         INT NOT NULL COMMENT '关联 strategies.id',
+            max_position_usdt   DECIMAL(20, 2) NOT NULL DEFAULT 100.00,
+            daily_loss_limit    DECIMAL(20, 2) NOT NULL DEFAULT 50.00,
+            max_trades_per_day  INT NOT NULL DEFAULT 20,
+            min_profit_rate     DECIMAL(10, 4) NOT NULL DEFAULT 0.0100,
+            max_loss_rate       DECIMAL(10, 4) NOT NULL DEFAULT 0.0200,
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_strategy (strategy_id),
+            CONSTRAINT fk_risk_strategy FOREIGN KEY (strategy_id) REFERENCES strategies(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='策略风控参数表'
+    """)
+
+    # 迁移旧数据：将 strategies.risk_params JSON 中的数据复制到新表（仅一次）
+    migrate_risk_params()
+
     logger.info("所有数据库表已就绪")
+
+
+def migrate_risk_params():
+    """一次性迁移：将旧 strategies.risk_params JSON 数据导入 strategy_risk_params 表"""
+    # 检查旧列是否存在
+    col_check = fetch_one("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=%s AND TABLE_NAME='strategies' AND COLUMN_NAME='risk_params'", (DB_NAME,), db=DB_NAME)
+    if not col_check:
+        return  # 旧列不存在，无需迁移
+
+    # 查出所有还没有风控参数记录的 strategy
+    rows = fetch_all("""
+        SELECT s.id, s.risk_params
+        FROM strategies s
+        LEFT JOIN strategy_risk_params r ON r.strategy_id = s.id
+        WHERE r.id IS NULL AND s.risk_params IS NOT NULL
+    """, db=DB_NAME)
+    if not rows:
+        return
+
+    for row in rows:
+        try:
+            rp = json.loads(row["risk_params"]) if isinstance(row["risk_params"], str) else (row["risk_params"] or {})
+        except (json.JSONDecodeError, TypeError):
+            rp = {}
+        execute(
+            """INSERT INTO strategy_risk_params
+               (strategy_id, max_position_usdt, daily_loss_limit, max_trades_per_day, min_profit_rate, max_loss_rate)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (
+                row["id"],
+                rp.get("max_position_usdt", 100),
+                rp.get("daily_loss_limit", 50),
+                rp.get("max_trades_per_day", 20),
+                rp.get("min_profit_rate", 0.01),
+                rp.get("max_loss_rate", 0.02),
+            ),
+            db=DB_NAME,
+        )
+    logger.info(f"已迁移 {len(rows)} 条策略的风控参数到 strategy_risk_params 表")
 
 
 def insert_strategy_defaults(user_id: str = "default"):
@@ -127,23 +185,17 @@ def insert_strategy_defaults(user_id: str = "default"):
         RSI_TIMEFRAMES, RSI_PERIOD, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_ALERT_COOLDOWN,
     )
 
+    # 插入 strategies 表
     execute(
         """INSERT INTO strategies
-           (name, strategy_type, symbol, timeframe, params, risk_params, rsi_params, user_id, paper_trading)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+           (name, strategy_type, symbol, timeframe, params, rsi_params, user_id, paper_trading)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
         (
             f"{user_id} 策略",
             STRATEGY_NAME,
             SYMBOL,
             TIMEFRAME,
             json.dumps({"short_window": SHORT_MA, "long_window": LONG_MA, "limit": LIMIT}),
-            json.dumps({
-                "max_position_usdt": MAX_POSITION_USDT,
-                "daily_loss_limit": DAILY_LOSS_LIMIT,
-                "max_trades_per_day": MAX_TRADES_PER_DAY,
-                "min_profit_rate": MIN_PROFIT_RATE,
-                "max_loss_rate": MAX_LOSS_RATE,
-            }),
             json.dumps({
                 "timeframes": RSI_TIMEFRAMES,
                 "period": RSI_PERIOD,
@@ -156,4 +208,24 @@ def insert_strategy_defaults(user_id: str = "default"):
         ),
         db=DB_NAME,
     )
+
+    # 获取新插入的策略 ID，插入 strategy_risk_params
+    row = fetch_one(
+        "SELECT id FROM strategies WHERE user_id = %s ORDER BY id DESC LIMIT 1",
+        (user_id,),
+        db=DB_NAME,
+    )
+    if row:
+        execute(
+            """INSERT INTO strategy_risk_params
+               (strategy_id, max_position_usdt, daily_loss_limit, max_trades_per_day, min_profit_rate, max_loss_rate)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (
+                row["id"],
+                MAX_POSITION_USDT, DAILY_LOSS_LIMIT, MAX_TRADES_PER_DAY,
+                MIN_PROFIT_RATE, MAX_LOSS_RATE,
+            ),
+            db=DB_NAME,
+        )
+
     logger.info(f"已为用户 '{user_id}' 创建默认策略")

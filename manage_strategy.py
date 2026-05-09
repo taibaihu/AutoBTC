@@ -25,10 +25,9 @@ def cmd_list(args):
     print(header)
     print("-" * 90)
     for s in strategies:
-        rp = s.risk_params
-        tp = f"{rp.get('min_profit_rate', 0.01)*100:.0f}%"
-        sl = f"{rp.get('max_loss_rate', 0.02)*100:.0f}%"
-        pos = f"{rp.get('max_position_usdt', 100)}U"
+        tp = f"{s.min_profit_rate*100:.1f}%"
+        sl = f"{s.max_loss_rate*100:.1f}%"
+        pos = f"{s.max_position_usdt:.0f}U"
         paper = "模拟" if s.paper_trading else "实盘"
         status = "启用" if s.enabled else "禁用"
         print(f"{s.id:<4} {s.user_id:<14} {s.strategy_type:<12} {s.timeframe:<6} {tp:<6} {sl:<6} {pos:<8} {paper:<5} {status:<5} {s.name}")
@@ -46,7 +45,12 @@ def cmd_view(args):
         "paper_trading": cfg.paper_trading,
         "enabled": cfg.enabled,
         "params": cfg.params,
-        "risk_params": cfg.risk_params,
+        # 风控参数（独立字段）
+        "max_position_usdt": cfg.max_position_usdt,
+        "daily_loss_limit": cfg.daily_loss_limit,
+        "max_trades_per_day": cfg.max_trades_per_day,
+        "min_profit_rate": cfg.min_profit_rate,
+        "max_loss_rate": cfg.max_loss_rate,
         "rsi_params": cfg.rsi_params,
     }, ensure_ascii=False, indent=2))
 
@@ -56,7 +60,6 @@ def cmd_set(args):
 
     if args.type:
         cfg.strategy_type = args.type
-        # 根据策略类型设置默认参数
         if args.type == "ma_cross":
             cfg.params.setdefault("short_window", 7)
             cfg.params.setdefault("long_window", 25)
@@ -70,7 +73,7 @@ def cmd_set(args):
     if args.timeframe:
         cfg.timeframe = args.timeframe
     if args.paper is not None:
-        cfg.paper_trading = args.paper
+        cfg.paper_trading = args.paper == "1"
     if args.name:
         cfg.name = args.name
 
@@ -83,36 +86,57 @@ def cmd_set(args):
 
 
 def cmd_param(args):
-    """修改策略的 JSON 参数"""
+    """修改策略的参数"""
     cfg = load_strategy(args.user)
 
-    # 确定目标字典
-    target_map = {
-        "strategy": cfg.params,
-        "risk": cfg.risk_params,
-        "rsi": cfg.rsi_params,
-    }
-    target = target_map.get(args.group)
-    if target is None:
-        print(f"未知参数组: {args.group}，可选: strategy, risk, rsi", file=sys.stderr)
+    if args.group == "risk":
+        # 修改风控参数（独立表独立字段）
+        for kv in args.set:
+            if "=" not in kv:
+                print(f"格式错误: '{kv}'，需要 key=value 格式", file=sys.stderr)
+                sys.exit(1)
+            key, val = kv.split("=", 1)
+            val = float(val)  # 风控参数全是数字
+            if key == "max_position_usdt":
+                cfg.max_position_usdt = val
+            elif key == "daily_loss_limit":
+                cfg.daily_loss_limit = val
+            elif key == "max_trades_per_day":
+                cfg.max_trades_per_day = int(val)
+            elif key == "min_profit_rate":
+                cfg.min_profit_rate = val
+            elif key == "max_loss_rate":
+                cfg.max_loss_rate = val
+            else:
+                print(f"未知风控参数: {key}", file=sys.stderr)
+                sys.exit(1)
+    elif args.group == "strategy":
+        for kv in args.set:
+            if "=" not in kv:
+                print(f"格式错误: '{kv}'", file=sys.stderr)
+                sys.exit(1)
+            key, val = kv.split("=", 1)
+            try:
+                cfg.params[key] = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                cfg.params[key] = val
+    elif args.group == "rsi":
+        for kv in args.set:
+            if "=" not in kv:
+                print(f"格式错误: '{kv}'", file=sys.stderr)
+                sys.exit(1)
+            key, val = kv.split("=", 1)
+            try:
+                cfg.rsi_params[key] = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                cfg.rsi_params[key] = val
+    else:
+        print(f"未知参数组: {args.group}", file=sys.stderr)
         sys.exit(1)
-
-    # 解析 key=value
-    for kv in args.set:
-        if "=" not in kv:
-            print(f"格式错误: '{kv}'，需要 key=value 格式", file=sys.stderr)
-            sys.exit(1)
-        key, val = kv.split("=", 1)
-        # 尝试解析 JSON 类型
-        try:
-            parsed = json.loads(val)
-            target[key] = parsed
-        except (json.JSONDecodeError, TypeError):
-            target[key] = val  # 保持字符串
 
     try:
         save_strategy(cfg)
-        print(f"参数已更新: {', '.join(args.set)}")
+        print(f"参数已更新")
     except Exception as e:
         print(f"保存失败: {e}", file=sys.stderr)
         sys.exit(1)
@@ -137,7 +161,6 @@ def cmd_disable(args):
 
 
 def cmd_apply(args):
-    """测试将用户策略应用到 config 的效果"""
     cfg = load_strategy(args.user)
     apply_to_config(cfg)
     from config import (
@@ -160,14 +183,10 @@ def main():
     parser = argparse.ArgumentParser(description="策略管理工具")
     sub = parser.add_subparsers(dest="command")
 
-    # list
     p_list = sub.add_parser("list", help="列出所有策略")
-
-    # view
     p_view = sub.add_parser("view", help="查看用户策略")
     p_view.add_argument("user", help="用户标识")
 
-    # set
     p_set = sub.add_parser("set", help="设置用户策略")
     p_set.add_argument("user", help="用户标识")
     p_set.add_argument("--type", "-t", choices=["ma_cross", "rsi_revert"], help="策略类型")
@@ -176,19 +195,16 @@ def main():
     p_set.add_argument("--paper", choices=["0", "1"], help="模拟模式 (1=模拟, 0=实盘)")
     p_set.add_argument("--name", "-n", help="策略名称")
 
-    # param
-    p_param = sub.add_parser("param", help="修改策略参数 (JSON)")
+    p_param = sub.add_parser("param", help="修改策略参数")
     p_param.add_argument("user", help="用户标识")
     p_param.add_argument("group", choices=["strategy", "risk", "rsi"], help="参数组")
     p_param.add_argument("set", nargs="+", metavar="key=value", help="参数键值对")
 
-    # enable / disable
     p_enable = sub.add_parser("enable", help="启用用户策略")
     p_enable.add_argument("user", help="用户标识")
     p_disable = sub.add_parser("disable", help="禁用用户策略")
     p_disable.add_argument("user", help="用户标识")
 
-    # apply (test)
     p_apply = sub.add_parser("apply", help="测试将策略应用到 config")
     p_apply.add_argument("user", default="default", nargs="?", help="用户标识")
 
