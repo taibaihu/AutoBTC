@@ -141,6 +141,17 @@ class FuturesEngine:
             logger.warning(f"查询持仓失败: {e}")
             return None
 
+    def cancel_all_orders(self):
+        """撤销当前交易对所有挂单（止盈止损单）"""
+        try:
+            orders = self.exchange.fetch_open_orders(self._symbol)
+            for o in orders:
+                self.exchange.cancel_order(o["id"], self._symbol)
+            if orders:
+                logger.info(f"已撤销 {len(orders)} 个挂单")
+        except Exception as e:
+            logger.warning(f"撤销挂单异常: {e}")
+
     def calc_contract_amount(self, usdt_amount: float, price: float) -> float:
         """计算合约数量 = (USDT金额 × 杠杆) / 当前价"""
         raw = (usdt_amount * self.leverage) / price

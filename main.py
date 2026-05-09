@@ -113,6 +113,7 @@ def main(user_id: str = "default"):
                 if reason:
                     pnl = risk.calc_pnl(price)
                     risk.record_trade(pnl, exit_price=price)
+                    engine.cancel_all_orders()
                     logger.info(f"💰 {reason} | 当前价: {price:.4f} | 盈亏: {pnl:+.2f} ({LEVERAGE}x)")
                     notifier.send(
                         f"<b>{reason}</b>\n"
@@ -154,6 +155,7 @@ def main(user_id: str = "default"):
                     logger.warning(f"⛔ 风控拦截: {reason}")
 
             elif signal == SELL and risk.position:
+                engine.cancel_all_orders()
                 pnl = risk.calc_pnl(price)
                 risk.record_trade(pnl, exit_price=price)
                 label = "🔴 合约平多(模拟)" if PAPER_TRADING else "🔴 合约平多"

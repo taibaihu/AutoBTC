@@ -26,13 +26,7 @@ def main():
     logger.info(f"持仓: {size} BTC @ {entry:.2f} | 现价: {price:.2f} | 浮动盈亏: {pnl:+.2f}U")
 
     # 2. 撤销所有挂单
-    try:
-        orders = engine.exchange.fetch_open_orders(CONTRACT_SYMBOL)
-        for o in orders:
-            engine.exchange.cancel_order(o["id"], CONTRACT_SYMBOL)
-            logger.info(f"已撤销订单: {o['id']} {o['type']} @ {o.get('price', 'N/A')}")
-    except Exception as e:
-        logger.warning(f"撤销挂单异常: {e}")
+    engine.cancel_all_orders()
 
     # 3. 市价平仓
     logger.info(f"正在市价平仓 {size} BTC...")
