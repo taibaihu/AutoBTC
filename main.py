@@ -4,6 +4,7 @@
 import argparse
 import time
 import logging
+from logging.handlers import TimedRotatingFileHandler
 
 import pandas as pd
 
@@ -20,10 +21,14 @@ from risk_manager import RiskManager
 from notifier import Notifier
 from strategy_manager import load_strategy, apply_to_config
 
-logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    level=logging.INFO,
-)
+handler = TimedRotatingFileHandler("main.log", when="midnight", interval=1, backupCount=30, encoding="utf-8")
+handler.suffix = "%Y-%m-%d"
+handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+
+console = logging.StreamHandler()
+console.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+
+logging.basicConfig(level=logging.INFO, handlers=[handler, console])
 logger = logging.getLogger(__name__)
 
 SIGNAL_MAP = {BUY: "\U0001f7e2买入", SELL: "\U0001f534卖出", HOLD: "⚪观望"}
