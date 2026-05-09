@@ -69,8 +69,8 @@ def main():
         logger.error(f"开多失败: {e}")
         sys.exit(1)
 
-    # 6. 查询持仓
-    time.sleep(2)
+    # 6. 查询持仓（等订单成交）
+    time.sleep(4)
     pos = engine.get_position()
     if pos:
         entry = pos["entry_price"]
@@ -81,16 +81,15 @@ def main():
         entry = price
         size = quantity
 
-    # 7. 设置止盈止损（限价单，reduceOnly）
+    # 7. 设置止盈止损（市价触发单）
     tp_price = round(entry * (1 + TP_PCT), 1)
     sl_price = round(entry * (1 - SL_PCT), 1)
 
     try:
         logger.info(f"设置止盈: {tp_price:.1f}")
         engine.exchange.create_order(
-            CONTRACT_SYMBOL, "TAKE_PROFIT_LIMIT", "sell", size,
-            price=tp_price,
-            params={"stopPrice": tp_price, "reduceOnly": True, "positionSide": "LONG", "timeInForce": "GTC"},
+            CONTRACT_SYMBOL, "TAKE_PROFIT_MARKET", "sell", size,
+            params={"stopPrice": tp_price, "reduceOnly": True, "positionSide": "LONG"},
         )
         logger.info(f"止盈单已提交 ✅")
     except Exception as e:
@@ -99,9 +98,8 @@ def main():
     try:
         logger.info(f"设置止损: {sl_price:.1f}")
         engine.exchange.create_order(
-            CONTRACT_SYMBOL, "STOP_LOSS_LIMIT", "sell", size,
-            price=sl_price,
-            params={"stopPrice": sl_price, "reduceOnly": True, "positionSide": "LONG", "timeInForce": "GTC"},
+            CONTRACT_SYMBOL, "STOP_MARKET", "sell", size,
+            params={"stopPrice": sl_price, "reduceOnly": True, "positionSide": "LONG"},
         )
         logger.info(f"止损单已提交 ✅")
     except Exception as e:
