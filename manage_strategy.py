@@ -21,12 +21,17 @@ def cmd_list(args):
         print("暂无策略")
         return
 
-    print(f"{'ID':<4} {'用户':<16} {'类型':<14} {'交易对':<12} {'周期':<6} {'模拟':<6} {'状态':<6} {'名称'}")
+    header = f"{'ID':<4} {'用户':<14} {'类型':<12} {'周期':<6} {'止盈':<6} {'止损':<6} {'仓位':<8} {'模拟':<5} {'状态':<5} {'名称'}"
+    print(header)
     print("-" * 90)
     for s in strategies:
+        rp = s.risk_params
+        tp = f"{rp.get('min_profit_rate', 0.01)*100:.0f}%"
+        sl = f"{rp.get('max_loss_rate', 0.02)*100:.0f}%"
+        pos = f"{rp.get('max_position_usdt', 100)}U"
         paper = "模拟" if s.paper_trading else "实盘"
         status = "启用" if s.enabled else "禁用"
-        print(f"{s.id:<4} {s.user_id:<16} {s.strategy_type:<14} {s.symbol:<12} {s.timeframe:<6} {paper:<6} {status:<6} {s.name}")
+        print(f"{s.id:<4} {s.user_id:<14} {s.strategy_type:<12} {s.timeframe:<6} {tp:<6} {sl:<6} {pos:<8} {paper:<5} {status:<5} {s.name}")
 
 
 def cmd_view(args):

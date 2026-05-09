@@ -72,6 +72,8 @@ def main(user_id: str = "default"):
         max_position_usdt=MAX_POSITION_USDT,
         daily_loss_limit=DAILY_LOSS_LIMIT,
         max_trades_per_day=MAX_TRADES_PER_DAY,
+        min_profit_rate=MIN_PROFIT_RATE,
+        max_loss_rate=MAX_LOSS_RATE,
     )
     notifier = Notifier()
 

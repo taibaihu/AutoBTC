@@ -131,6 +131,7 @@ def apply_to_config(cfg: StrategyConfig):
         strategy_kwargs["oversold"] = cfg.params.get("oversold", 20)
         strategy_kwargs["overbought"] = cfg.params.get("overbought", 80)
     cmod.STRATEGY_KWARGS = strategy_kwargs
+    cmod.LIMIT = cfg.params.get("limit", 100)
 
     # 风控参数
     rp = cfg.risk_params
