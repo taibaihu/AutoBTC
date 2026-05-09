@@ -15,7 +15,7 @@ from config import (
     RSI_TIMEFRAMES, RSI_PERIOD, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_ALERT_COOLDOWN,
 )
 from engine import FuturesEngine, OKXEngine
-from strategy import BUY, SELL, HOLD, STRATEGIES, calc_rsi_series, calc_macd, calc_kdj, check_buy_conditions
+from strategy import BUY, SELL, HOLD, STRATEGIES, calc_rsi_series, calc_macd, calc_kdj, calc_bollinger_bands, check_buy_conditions
 from risk_manager import RiskManager
 from notifier import Notifier
 from strategy_manager import load_strategy, apply_to_config
@@ -221,9 +221,22 @@ def main(user_id: str = "default"):
             # 合约指标（含实时价更新后的 df）
             rsi_values, macd_data, kdj_data, live_df = _calc_indicators(engine, df)
 
+            # 布林带（5m + 15m，周期20，标准差2）
+            bb_5m = calc_bollinger_bands(df["close"], 20, 2)
+            try:
+                df_15m = engine.fetch_ohlcv(CONTRACT_SYMBOL, "15m", 25)
+                bb_15m = calc_bollinger_bands(df_15m["close"], 20, 2)
+            except Exception:
+                bb_15m = None
+
             # 日志输出
             rsi_parts = [f"{tf} B:{rsi_values[tf]:.1f}" for tf in RSI_TIMEFRAMES]
-            logger.info(f"📈 {'.'.join(rsi_parts)} | {_indicator_str(macd_data, kdj_data)}")
+            bb_parts = []
+            for name, bb in [("5m", bb_5m), ("15m", bb_15m)]:
+                if bb:
+                    pct = f"{bb['position']*100:.0f}%"
+                    bb_parts.append(f"{name} U:{bb['upper']:.0f} M:{bb['middle']:.0f} L:{bb['lower']:.0f}({pct})")
+            logger.info(f"📈 {' | '.join(rsi_parts)} | {' | '.join(bb_parts)} | {_indicator_str(macd_data, kdj_data)}")
 
             # 五重过滤买入检查（用实时价更新的 live_df）
             if macd_data and kdj_data and live_df is not None:

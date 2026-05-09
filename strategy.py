@@ -67,6 +67,23 @@ def calc_kdj(close: pd.Series, high: pd.Series, low: pd.Series, period: int = 9,
     }
 
 
+def calc_bollinger_bands(close: pd.Series, period: int = 20, std_mult: float = 2.0) -> dict:
+    """计算布林带，返回最新值 {upper, middle, lower, bandwidth}"""
+    middle = close.rolling(period).mean()
+    std = close.rolling(period).std()
+    upper = middle + std_mult * std
+    lower = middle - std_mult * std
+    current_price = close.iloc[-1]
+    bandwidth = (upper.iloc[-1] - lower.iloc[-1]) / middle.iloc[-1]
+    return {
+        "upper": float(upper.iloc[-1]),
+        "middle": float(middle.iloc[-1]),
+        "lower": float(lower.iloc[-1]),
+        "bandwidth": float(bandwidth),
+        "position": float((current_price - lower.iloc[-1]) / (upper.iloc[-1] - lower.iloc[-1])),
+    }
+
+
 def calc_macd_series(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
     """返回完整的 MACD 序列（用于历史检查）"""
     ema_fast = close.ewm(span=fast, adjust=False).mean()
