@@ -89,7 +89,7 @@ def main():
         logger.info(f"设置止盈: {tp_price:.1f}")
         engine.exchange.create_order(
             CONTRACT_SYMBOL, "TAKE_PROFIT_MARKET", "sell", size,
-            params={"stopPrice": tp_price, "reduceOnly": True, "positionSide": "LONG"},
+            params={"stopPrice": tp_price, "positionSide": "LONG"},
         )
         logger.info(f"止盈单已提交 ✅")
     except Exception as e:
@@ -99,7 +99,7 @@ def main():
         logger.info(f"设置止损: {sl_price:.1f}")
         engine.exchange.create_order(
             CONTRACT_SYMBOL, "STOP_MARKET", "sell", size,
-            params={"stopPrice": sl_price, "reduceOnly": True, "positionSide": "LONG"},
+            params={"stopPrice": sl_price, "positionSide": "LONG"},
         )
         logger.info(f"止损单已提交 ✅")
     except Exception as e:
