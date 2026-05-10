@@ -18,7 +18,7 @@ from config import (
 from engine import FuturesEngine, OKXEngine
 from strategy import BUY, SELL, HOLD, STRATEGIES, calc_rsi_series, calc_macd, calc_kdj, calc_bollinger_bands, check_buy_conditions
 from risk_manager import RiskManager
-from db_manager import save_real_order
+from db_manager import save_real_order, save_sim_order
 from notifier import Notifier
 from strategy_manager import load_strategy, apply_to_config
 
@@ -91,6 +91,8 @@ def main(user_id: str = "default"):
     notifier.send(f"<b>🚀 合约引擎启动</b>\n用户: {user_id}\n{CONTRACT_SYMBOL} {TIMEFRAME} {LEVERAGE}x\n策略: {STRATEGY_NAME}")
 
     last_rsi_alert = 0.0
+    last_buy_alert = 0.0
+    BUY_ALERT_COOLDOWN = 300  # 买入预警冷却 5 分钟
 
     is_short_strategy = cfg.strategy_type in ("fast_range_short",)
     if is_short_strategy:
@@ -113,9 +115,9 @@ def main(user_id: str = "default"):
                 live_okx = None
             if live_binance and live_okx:
                 spread = live_binance - live_okx
-                logger.info(f"🔥 合约价 B:{live_binance:.2f}  O现货:{live_okx:.2f}  Δ:{spread:+.2f}")
+                logger.info(f"🔥 合约价 B:{live_binance:.2f}  O合约价:{live_okx:.2f}  Δ:{spread:+.2f}")
             elif live_binance:
-                logger.info(f"🔥 合约价 B:{live_binance:.2f}  O现货:获取失败")
+                logger.info(f"🔥 合约价 B:{live_binance:.2f}  O合约价:获取失败")
 
             # 2. 持仓检查 —— 止盈/止损（多空独立检查）
             if risk.position:
@@ -183,6 +185,10 @@ def main(user_id: str = "default"):
                             result = engine.market_sell_short(CONTRACT_SYMBOL, MAX_POSITION_USDT)
                             save_real_order(result, CONTRACT_SYMBOL, "SELL", "SHORT",
                                             strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                        else:
+                            save_sim_order(CONTRACT_SYMBOL, "SELL", "SHORT", price,
+                                           signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
+                                           msg=f"开空 @ {price}")
                     else:
                         logger.warning(f"⛔ 风控拦截: {reason}")
 
@@ -202,6 +208,10 @@ def main(user_id: str = "default"):
                         result = engine.market_buy_cover(CONTRACT_SYMBOL, MAX_POSITION_USDT)
                         save_real_order(result, CONTRACT_SYMBOL, "BUY", "SHORT",
                                         strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
+                    else:
+                        save_sim_order(CONTRACT_SYMBOL, "BUY", "SHORT", price,
+                                       signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
+                                       msg=f"平空 @ {price} | PnL:{pnl:+.2f}")
             else:
                 # ── 做多模式: BUY=开多, SELL=平多 ──
                 if signal == BUY and not risk.position:
@@ -221,6 +231,10 @@ def main(user_id: str = "default"):
                             result = engine.market_buy(CONTRACT_SYMBOL, MAX_POSITION_USDT)
                             save_real_order(result, CONTRACT_SYMBOL, "BUY", "LONG",
                                             strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                        else:
+                            save_sim_order(CONTRACT_SYMBOL, "BUY", "LONG", price,
+                                           signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
+                                           msg=f"开多 @ {price}")
                     else:
                         logger.warning(f"⛔ 风控拦截: {reason}")
 
@@ -240,6 +254,10 @@ def main(user_id: str = "default"):
                         result = engine.market_sell(CONTRACT_SYMBOL, MAX_POSITION_USDT)
                         save_real_order(result, CONTRACT_SYMBOL, "SELL", "LONG",
                                         strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
+                    else:
+                        save_sim_order(CONTRACT_SYMBOL, "SELL", "LONG", price,
+                                       signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
+                                       msg=f"平多 @ {price} | PnL:{pnl:+.2f}")
 
             # ===== 多周期指标监控（合约数据，实时价参与）=====
             def _calc_indicators(exchange_obj, main_tf_df=None):
@@ -293,33 +311,36 @@ def main(user_id: str = "default"):
             # 合约指标（含实时价更新后的 df）
             rsi_values, macd_data, kdj_data, live_df = _calc_indicators(engine, df)
 
-            # 布林带（5m + 15m，周期20，标准差2）
-            bb_5m = calc_bollinger_bands(df["close"], 20, 2)
-            try:
-                df_15m = engine.fetch_ohlcv(CONTRACT_SYMBOL, "15m", 25)
-                bb_15m = calc_bollinger_bands(df_15m["close"], 20, 2)
-            except Exception:
-                bb_15m = None
+            # 布林带（15m，周期20，标准差2）
+            bb_15m = calc_bollinger_bands(df["close"], 20, 2)
 
             # 日志输出
             rsi_parts = [f"{tf} B:{rsi_values[tf]:.1f}" for tf in RSI_TIMEFRAMES]
             bb_parts = []
-            for name, bb in [("5m", bb_5m), ("15m", bb_15m)]:
-                if bb:
-                    pct = f"{bb['position']*100:.0f}%"
-                    bb_parts.append(f"{name} U:{bb['upper']:.0f} M:{bb['middle']:.0f} L:{bb['lower']:.0f}({pct})")
+            if bb_15m:
+                pct = f"{bb_15m['position']*100:.0f}%"
+                bb_parts.append(f"15m U:{bb_15m['upper']:.0f} M:{bb_15m['middle']:.0f} L:{bb_15m['lower']:.0f}({pct})")
             logger.info(f"📈 {' | '.join(rsi_parts)} | {' | '.join(bb_parts)} | {_indicator_str(macd_data, kdj_data)}")
 
             # 五重过滤买入检查（用实时价更新的 live_df）
             if macd_data and kdj_data and live_df is not None:
                 buy_signal, buy_msg = check_buy_conditions(live_df, macd_data, kdj_data)
-                if buy_signal:
+                now = time.time()
+                if buy_signal and (now - last_buy_alert > BUY_ALERT_COOLDOWN):
+                    last_buy_alert = now
                     logger.info(f"🚨 {buy_msg}")
                     notifier.send(
                         f"<b>🟢 买入预警</b>\n"
                         f"{CONTRACT_SYMBOL} @ {price:.2f}\n"
                         f"{buy_msg}\n"
                         f"MACD:{macd_data['macd']:.1f} K:{kdj_data['k']:.1f} J:{kdj_data['j']:.1f}"
+                    )
+                    save_sim_order(
+                        symbol=CONTRACT_SYMBOL, side="BUY", position_side="LONG",
+                        price=price, signal_type="buy_alert",
+                        strategy_name=STRATEGY_NAME,
+                        indicators={"macd": macd_data, "kdj": kdj_data, "rsi": rsi_values},
+                        msg=buy_msg,
                     )
                 elif buy_msg:
                     logger.info(f"⛔ {buy_msg}")

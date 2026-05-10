@@ -14,8 +14,8 @@ SECRET_KEY = os.getenv("BINANCE_SECRET_KEY", "")
 # ===== 交易对 & 参数 =====
 SYMBOL = "BTC/USDT"          # 主交易对（现货）
 CONTRACT_SYMBOL = "BTC/USDT:USDT"  # 合约交易对
-TIMEFRAME = "5m"             # K线周期: 1m, 5m, 15m, 1h, 4h, 1d
-LIMIT = 100                  # 获取K线根数
+TIMEFRAME = "15m"             # K线周期: 1m, 5m, 15m, 1h, 4h, 1d
+LIMIT = 200                  # 获取K线根数
 LEVERAGE = 100               # 合约杠杆倍数
 
 # ===== 策略参数 =====
@@ -39,7 +39,7 @@ STRATEGY_KWARGS = {}
 # 如需自定义: STRATEGY_KWARGS = {"bb_period":20, "bb_std":2, "trend_ema_period":50}
 
 # ===== RSI 多周期预警 =====
-RSI_TIMEFRAMES = ["5m", "1h", "2h"]   # 监控的时间周期
+RSI_TIMEFRAMES = ["15m", "1h", "2h"]   # 监控的时间周期
 RSI_PERIOD = 14                       # RSI 计算周期
 RSI_OVERBOUGHT = 80                   # 超买阈值
 RSI_OVERSOLD = 20                     # 超卖阈值

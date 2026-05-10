@@ -343,6 +343,28 @@ def api_buy_signals():
         return json_err(str(e))
 
 
+# ── 模拟交易记录 ────────────────────────────────────────────
+
+
+@app.route("/api/sim-orders")
+def api_sim_orders():
+    try:
+        limit = int(request.args.get("limit", 50))
+        signal_type = request.args.get("signal_type")
+        if signal_type:
+            rows = fetch_all(
+                "SELECT * FROM sim_orders WHERE signal_type = %s ORDER BY created_at DESC LIMIT %s",
+                (signal_type, limit),
+            )
+        else:
+            rows = fetch_all(
+                "SELECT * FROM sim_orders ORDER BY created_at DESC LIMIT %s", (limit,)
+            )
+        return json_ok_data(rows)
+    except Exception as e:
+        return json_err(str(e))
+
+
 # ── 前端页面 ────────────────────────────────────────────────
 
 
@@ -353,6 +375,11 @@ def index():
 
 @app.route("/orders")
 def orders_page():
+    return send_from_directory("static", "index.html")
+
+
+@app.route("/sim-orders")
+def sim_orders_page():
     return send_from_directory("static", "index.html")
 
 

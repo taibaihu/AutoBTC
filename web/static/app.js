@@ -213,6 +213,85 @@ function applyOrderFilter() {
   renderOrders();
 }
 
+async function renderSimOrders() {
+  setActiveNav('sim-orders');
+  const app = qs('#app');
+  app.innerHTML = '<div class="loading">加载中...</div>';
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const limit = params.get('limit') || 100;
+    const signalType = params.get('signal_type') || '';
+
+    let path = `/api/sim-orders?limit=${limit}`;
+    if (signalType) path += `&signal_type=${signalType}`;
+
+    const rows = await api(path);
+
+    // 按信号类型分组统计
+    const stats = { strategy_signal: 0, buy_alert: 0 };
+    rows.forEach(r => { if (stats[r.signal_type] !== undefined) stats[r.signal_type]++; });
+
+    app.innerHTML = `
+      <div class="row">
+        <div class="col-6"><div class="stat-card">
+          <div class="label">策略信号</div>
+          <div class="value blue">${stats.strategy_signal}</div>
+        </div></div>
+        <div class="col-6"><div class="stat-card">
+          <div class="label">买入预警</div>
+          <div class="value green">${stats.buy_alert}</div>
+        </div></div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">
+          📋 模拟交易记录
+          <span class="count">(${rows.length})</span>
+        </div>
+        <div class="filters">
+          <select id="filterSignalType" onchange="applySimFilter()">
+            <option value="">全部类型</option>
+            <option value="strategy_signal" ${signalType==='strategy_signal'?'selected':''}>策略信号</option>
+            <option value="buy_alert" ${signalType==='buy_alert'?'selected':''}>买入预警</option>
+          </select>
+          <span style="color:#8b949e;font-size:.85rem;align-self:center">最近 ${limit} 条</span>
+        </div>
+        <div class="table-wrap">${renderSimTable(rows)}</div>
+      </div>
+    `;
+  } catch (e) {
+    app.innerHTML = `<div class="empty">加载失败: ${e.message}</div>`;
+  }
+}
+
+function applySimFilter() {
+  const t = qs('#filterSignalType').value;
+  const params = new URLSearchParams();
+  if (t) params.set('signal_type', t);
+  const q = params.toString();
+  history.pushState({}, '', '/sim-orders' + (q ? '?' + q : ''));
+  renderSimOrders();
+}
+
+function renderSimTable(rows) {
+  if (!rows || !rows.length) return '<div class="empty">暂无记录</div>';
+  const h = (s) => s ? s.replace(/</g,'&lt;').replace(/>/g,'&gt;') : '-';
+  return `<table class="table"><thead><tr>
+    <th>#</th><th>时间</th><th>类型</th><th>方向</th><th>价格</th><th>策略</th><th>备注</th>
+  </tr></thead><tbody>
+    ${rows.map(r => `<tr>
+      <td>${r.id}</td>
+      <td>${fmtFullTime(r.created_at)}</td>
+      <td><span class="badge ${r.signal_type === 'buy_alert' ? 'badge-green' : 'badge-blue'}">${r.signal_type === 'buy_alert' ? '预警' : '策略'}</span></td>
+      <td>${sideBadge(r.side)} ${r.position_side || ''}</td>
+      <td>${r.price ? parseFloat(r.price).toFixed(2) : '-'}</td>
+      <td>${h(r.strategy_name)}</td>
+      <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis">${h(r.msg)}</td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
+
 async function renderStrategies() {
   setActiveNav('strategies');
   const app = qs('#app');
@@ -497,6 +576,7 @@ function route() {
   if (path === '/' || path === '') renderDashboard();
   else if (path === '/orders') renderOrders();
   else if (path === '/strategies') renderStrategies();
+  else if (path === '/sim-orders') renderSimOrders();
   else if (/^\/strategy\/(\d+)$/.test(path)) {
     const id = path.match(/^\/strategy\/(\d+)$/)[1];
     renderStrategyDetail(id);

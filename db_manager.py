@@ -183,7 +183,42 @@ def init_database():
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实盘分析表(按日聚合)'
     """)
 
+    # sim_orders 表（模拟交易/预警订单）
+    execute("""
+        CREATE TABLE IF NOT EXISTS sim_orders (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            symbol          VARCHAR(20) NOT NULL COMMENT '交易对',
+            side            VARCHAR(10) NOT NULL COMMENT 'BUY/SELL',
+            position_side   VARCHAR(10) DEFAULT '' COMMENT 'LONG/SHORT',
+            price           DECIMAL(20, 8) DEFAULT NULL COMMENT '触发价格',
+            signal_type     VARCHAR(50) DEFAULT '' COMMENT '信号类型: buy_alert/strategy_signal',
+            strategy_name   VARCHAR(50) DEFAULT '' COMMENT '策略名称',
+            indicators      TEXT DEFAULT NULL COMMENT '触发时的指标JSON',
+            msg             TEXT DEFAULT NULL COMMENT '备注信息',
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_created (created_at),
+            INDEX idx_signal_type (signal_type)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='模拟交易记录表'
+    """)
+
     logger.info("所有数据库表已就绪")
+
+
+def save_sim_order(symbol: str, side: str, position_side: str, price: float,
+                   signal_type: str = "strategy_signal", strategy_name: str = "",
+                   indicators: dict = None, msg: str = "") -> Optional[int]:
+    """将模拟交易/预警记录写入 sim_orders 表"""
+    import json
+    cur = execute(
+        """INSERT INTO sim_orders
+           (symbol, side, position_side, price, signal_type, strategy_name, indicators, msg)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+        (symbol, side, position_side, price, signal_type, strategy_name,
+         json.dumps(indicators, ensure_ascii=False) if indicators else None, msg),
+    )
+    if cur and cur.lastrowid:
+        return cur.lastrowid
+    return None
 
 
 def migrate_risk_params():
