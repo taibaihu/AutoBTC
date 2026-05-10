@@ -34,7 +34,7 @@ MAX_LOSS_RATE = 0.02         # 最大止损比例 (2%)
 
 # ===== 策略选择 =====
 STRATEGY_NAME = "fast_range"    # 策略名: ma_cross / rsi_revert / fast_range
-STRATEGY_KWARGS = {}
+STRATEGY_KWARGS = {"buy_zone": 0.15}
 # FastRangeStrategy 默认已开启实盘(paper_trading=False), 使用默认参数即可
 # 如需自定义: STRATEGY_KWARGS = {"bb_period":20, "bb_std":2, "trend_ema_period":50}
 
@@ -44,6 +44,7 @@ RSI_PERIOD = 14                       # RSI 计算周期
 RSI_OVERBOUGHT = 80                   # 超买阈值
 RSI_OVERSOLD = 20                     # 超卖阈值
 RSI_ALERT_COOLDOWN = 300              # 重复告警冷却时间 (秒)
+POSITION_COOLDOWN_MINUTES = 30        # 平仓后冷却时间（分钟）
 
 # ===== 数据库 (阿里云 MySQL) =====
 DB_HOST = os.getenv("DB_HOST", "")

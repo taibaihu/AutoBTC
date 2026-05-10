@@ -14,9 +14,10 @@ from config import (
     MIN_PROFIT_RATE, MAX_LOSS_RATE, LEVERAGE,
     STRATEGY_NAME, STRATEGY_KWARGS,
     RSI_TIMEFRAMES, RSI_PERIOD, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_ALERT_COOLDOWN,
+    POSITION_COOLDOWN_MINUTES,
 )
 from engine import FuturesEngine, OKXEngine
-from strategy import BUY, SELL, HOLD, STRATEGIES, calc_rsi_series, calc_macd, calc_kdj, calc_bollinger_bands, check_buy_conditions
+from strategy import BUY, SELL, HOLD, STRATEGIES, calc_rsi_series, calc_macd, calc_kdj, calc_bollinger_bands
 from risk_manager import RiskManager
 from db_manager import save_real_order, save_sim_order
 from notifier import Notifier
@@ -91,8 +92,7 @@ def main(user_id: str = "default"):
     notifier.send(f"<b>🚀 合约引擎启动</b>\n用户: {user_id}\n{CONTRACT_SYMBOL} {TIMEFRAME} {LEVERAGE}x\n策略: {STRATEGY_NAME}")
 
     last_rsi_alert = 0.0
-    last_buy_alert = 0.0
-    BUY_ALERT_COOLDOWN = 300  # 买入预警冷却 5 分钟
+    next_trade_time = 0.0
 
     is_short_strategy = cfg.strategy_type in ("fast_range_short",)
     if is_short_strategy:
@@ -134,6 +134,7 @@ def main(user_id: str = "default"):
                         f"价格: {price:.4f}\n"
                         f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)"
                     )
+                    next_trade_time = time.time() + POSITION_COOLDOWN_MINUTES * 60
 
             if risk.short_position:
                 reason = risk.should_close_short(price)
@@ -148,6 +149,7 @@ def main(user_id: str = "default"):
                         f"价格: {price:.4f}\n"
                         f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)"
                     )
+                    next_trade_time = time.time() + POSITION_COOLDOWN_MINUTES * 60
 
             # 3. 生成信号
             signal, indicators = strategy.generate_signal(df)
@@ -169,33 +171,37 @@ def main(user_id: str = "default"):
             if is_short_strategy:
                 # ── 做空模式: SELL=开空, BUY=平空 ──
                 if signal == SELL and not risk.short_position:
-                    ok, reason = risk.can_trade()
-                    if ok:
-                        risk.open_short(price)
-                        label = "🔴 合约开空(模拟)" if strategy.paper_trading else "🔴 合约开空"
-                        pos_value = MAX_POSITION_USDT * LEVERAGE
-                        logger.info(f"{label} | {price:.4f} | 保证金:{MAX_POSITION_USDT}U | {LEVERAGE}x | 名义价值:{pos_value:.2f}U")
-                        notifier.send(
-                            f"<b>{label}</b>\n"
-                            f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
-                            f"保证金: {MAX_POSITION_USDT} USDT | {LEVERAGE}x\n"
-                            f"名义价值: {pos_value:.2f} USDT"
-                        )
-                        if not strategy.paper_trading:
-                            result = engine.market_sell_short(CONTRACT_SYMBOL, MAX_POSITION_USDT)
-                            save_real_order(result, CONTRACT_SYMBOL, "SELL", "SHORT",
-                                            strategy.__class__.__name__, LEVERAGE, paper_trading=0)
-                        else:
-                            save_sim_order(CONTRACT_SYMBOL, "SELL", "SHORT", price,
-                                           signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
-                                           msg=f"开空 @ {price}")
+                    if time.time() < next_trade_time:
+                        logger.info(f"⏳ 冷却中({int(next_trade_time - time.time())}s)")
                     else:
-                        logger.warning(f"⛔ 风控拦截: {reason}")
+                        ok, reason = risk.can_trade()
+                        if ok:
+                            risk.open_short(price)
+                            label = "🔴 合约开空(模拟)" if strategy.paper_trading else "🔴 合约开空"
+                            pos_value = MAX_POSITION_USDT * LEVERAGE
+                            logger.info(f"{label} | {price:.4f} | 保证金:{MAX_POSITION_USDT}U | {LEVERAGE}x | 名义价值:{pos_value:.2f}U")
+                            notifier.send(
+                                f"<b>{label}</b>\n"
+                                f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
+                                f"保证金: {MAX_POSITION_USDT} USDT | {LEVERAGE}x\n"
+                                f"名义价值: {pos_value:.2f} USDT"
+                            )
+                            if not strategy.paper_trading:
+                                result = engine.market_sell_short(CONTRACT_SYMBOL, MAX_POSITION_USDT)
+                                save_real_order(result, CONTRACT_SYMBOL, "SELL", "SHORT",
+                                                strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                            else:
+                                save_sim_order(CONTRACT_SYMBOL, "SELL", "SHORT", price,
+                                               signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
+                                               msg=f"开空 @ {price}")
+                        else:
+                            logger.warning(f"⛔ 风控拦截: {reason}")
 
                 elif signal == BUY and risk.short_position:
                     engine.cancel_all_orders()
                     pnl = risk.calc_short_pnl(price)
                     risk.close_short(pnl, exit_price=price)
+                    next_trade_time = time.time() + POSITION_COOLDOWN_MINUTES * 60
                     label = "🟢 合约平空(模拟)" if strategy.paper_trading else "🟢 合约平空"
                     logger.info(f"{label} | {price:.4f} | 盈亏: {pnl:+.2f}")
                     notifier.send(
@@ -215,33 +221,37 @@ def main(user_id: str = "default"):
             else:
                 # ── 做多模式: BUY=开多, SELL=平多 ──
                 if signal == BUY and not risk.position:
-                    ok, reason = risk.can_trade()
-                    if ok:
-                        risk.open_position(price)
-                        label = "🟢 合约开多(模拟)" if strategy.paper_trading else "🟢 合约开多"
-                        pos_value = MAX_POSITION_USDT * LEVERAGE
-                        logger.info(f"{label} | {price:.4f} | 保证金:{MAX_POSITION_USDT}U | {LEVERAGE}x | 名义价值:{pos_value:.2f}U")
-                        notifier.send(
-                            f"<b>{label}</b>\n"
-                            f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
-                            f"保证金: {MAX_POSITION_USDT} USDT | {LEVERAGE}x\n"
-                            f"名义价值: {pos_value:.2f} USDT"
-                        )
-                        if not strategy.paper_trading:
-                            result = engine.market_buy(CONTRACT_SYMBOL, MAX_POSITION_USDT)
-                            save_real_order(result, CONTRACT_SYMBOL, "BUY", "LONG",
-                                            strategy.__class__.__name__, LEVERAGE, paper_trading=0)
-                        else:
-                            save_sim_order(CONTRACT_SYMBOL, "BUY", "LONG", price,
-                                           signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
-                                           msg=f"开多 @ {price}")
+                    if time.time() < next_trade_time:
+                        logger.info(f"⏳ 冷却中({int(next_trade_time - time.time())}s)")
                     else:
-                        logger.warning(f"⛔ 风控拦截: {reason}")
+                        ok, reason = risk.can_trade()
+                        if ok:
+                            risk.open_position(price)
+                            label = "🟢 合约开多(模拟)" if strategy.paper_trading else "🟢 合约开多"
+                            pos_value = MAX_POSITION_USDT * LEVERAGE
+                            logger.info(f"{label} | {price:.4f} | 保证金:{MAX_POSITION_USDT}U | {LEVERAGE}x | 名义价值:{pos_value:.2f}U")
+                            notifier.send(
+                                f"<b>{label}</b>\n"
+                                f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
+                                f"保证金: {MAX_POSITION_USDT} USDT | {LEVERAGE}x\n"
+                                f"名义价值: {pos_value:.2f} USDT"
+                            )
+                            if not strategy.paper_trading:
+                                result = engine.market_buy(CONTRACT_SYMBOL, MAX_POSITION_USDT)
+                                save_real_order(result, CONTRACT_SYMBOL, "BUY", "LONG",
+                                                strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                            else:
+                                save_sim_order(CONTRACT_SYMBOL, "BUY", "LONG", price,
+                                               signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
+                                               msg=f"开多 @ {price}")
+                        else:
+                            logger.warning(f"⛔ 风控拦截: {reason}")
 
                 elif signal == SELL and risk.position:
                     engine.cancel_all_orders()
                     pnl = risk.calc_pnl(price)
                     risk.record_trade(pnl, exit_price=price)
+                    next_trade_time = time.time() + POSITION_COOLDOWN_MINUTES * 60
                     label = "🔴 合约平多(模拟)" if strategy.paper_trading else "🔴 合约平多"
                     logger.info(f"{label} | {price:.4f} | 盈亏: {pnl:+.2f}")
                     notifier.send(
@@ -309,7 +319,7 @@ def main(user_id: str = "default"):
                 return " | ".join(parts)
 
             # 合约指标（含实时价更新后的 df）
-            rsi_values, macd_data, kdj_data, live_df = _calc_indicators(engine, df)
+            rsi_values, macd_data, kdj_data, _ = _calc_indicators(engine, df)
 
             # 布林带（15m，周期20，标准差2）
             bb_15m = calc_bollinger_bands(df["close"], 20, 2)
@@ -321,29 +331,6 @@ def main(user_id: str = "default"):
                 pct = f"{bb_15m['position']*100:.0f}%"
                 bb_parts.append(f"15m U:{bb_15m['upper']:.0f} M:{bb_15m['middle']:.0f} L:{bb_15m['lower']:.0f}({pct})")
             logger.info(f"📈 {' | '.join(rsi_parts)} | {' | '.join(bb_parts)} | {_indicator_str(macd_data, kdj_data)}")
-
-            # 五重过滤买入检查（用实时价更新的 live_df）
-            if macd_data and kdj_data and live_df is not None:
-                buy_signal, buy_msg = check_buy_conditions(live_df, macd_data, kdj_data)
-                now = time.time()
-                if buy_signal and (now - last_buy_alert > BUY_ALERT_COOLDOWN):
-                    last_buy_alert = now
-                    logger.info(f"🚨 {buy_msg}")
-                    notifier.send(
-                        f"<b>🟢 买入预警</b>\n"
-                        f"{CONTRACT_SYMBOL} @ {price:.2f}\n"
-                        f"{buy_msg}\n"
-                        f"MACD:{macd_data['macd']:.1f} K:{kdj_data['k']:.1f} J:{kdj_data['j']:.1f}"
-                    )
-                    save_sim_order(
-                        symbol=CONTRACT_SYMBOL, side="BUY", position_side="LONG",
-                        price=price, signal_type="buy_alert",
-                        strategy_name=STRATEGY_NAME,
-                        indicators={"macd": macd_data, "kdj": kdj_data, "rsi": rsi_values},
-                        msg=buy_msg,
-                    )
-                elif buy_msg:
-                    logger.info(f"⛔ {buy_msg}")
 
             last_rsi_alert = check_rsi_alert(rsi_values, last_rsi_alert, notifier)
 
