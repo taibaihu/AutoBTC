@@ -12,7 +12,7 @@ from config import (
     SYMBOL, CONTRACT_SYMBOL, TIMEFRAME, LIMIT, SHORT_MA, LONG_MA,
     MAX_POSITION_USDT, DAILY_LOSS_LIMIT, MAX_TRADES_PER_DAY,
     MIN_PROFIT_RATE, MAX_LOSS_RATE, LEVERAGE,
-    STRATEGY_NAME, STRATEGY_KWARGS, PAPER_TRADING,
+    STRATEGY_NAME, STRATEGY_KWARGS,
     RSI_TIMEFRAMES, RSI_PERIOD, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_ALERT_COOLDOWN,
 )
 from engine import FuturesEngine, OKXEngine
@@ -145,7 +145,7 @@ def main(user_id: str = "default"):
                 ok, reason = risk.can_trade()
                 if ok:
                     risk.open_position(price)
-                    label = "🟢 合约开多(模拟)" if PAPER_TRADING else "🟢 合约开多"
+                    label = "🟢 合约开多(模拟)" if strategy.paper_trading else "🟢 合约开多"
                     pos_value = MAX_POSITION_USDT * LEVERAGE
                     logger.info(f"{label} | {price:.4f} | 保证金:{MAX_POSITION_USDT}U | {LEVERAGE}x | 名义价值:{pos_value:.2f}U")
                     notifier.send(
@@ -154,7 +154,7 @@ def main(user_id: str = "default"):
                         f"保证金: {MAX_POSITION_USDT} USDT | {LEVERAGE}x\n"
                         f"名义价值: {pos_value:.2f} USDT"
                     )
-                    if not PAPER_TRADING:
+                    if not strategy.paper_trading:
                         engine.market_buy(CONTRACT_SYMBOL, MAX_POSITION_USDT)
                 else:
                     logger.warning(f"⛔ 风控拦截: {reason}")
@@ -163,7 +163,7 @@ def main(user_id: str = "default"):
                 engine.cancel_all_orders()
                 pnl = risk.calc_pnl(price)
                 risk.record_trade(pnl, exit_price=price)
-                label = "🔴 合约平多(模拟)" if PAPER_TRADING else "🔴 合约平多"
+                label = "🔴 合约平多(模拟)" if strategy.paper_trading else "🔴 合约平多"
                 logger.info(f"{label} | {price:.4f} | 盈亏: {pnl:+.2f}")
                 notifier.send(
                     f"<b>{label}</b>\n"
@@ -171,7 +171,7 @@ def main(user_id: str = "default"):
                     f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)\n"
                     f"统计: 今日{risk.trade_count}笔 / 盈亏{risk.daily_pnl:+.2f}"
                 )
-                if not PAPER_TRADING:
+                if not strategy.paper_trading:
                     engine.market_sell(CONTRACT_SYMBOL, MAX_POSITION_USDT)
 
             # ===== 多周期指标监控（合约数据，实时价参与）=====

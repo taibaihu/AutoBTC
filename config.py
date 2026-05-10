@@ -33,8 +33,10 @@ MIN_PROFIT_RATE = 0.01       # 最小止盈比例 (1%)
 MAX_LOSS_RATE = 0.02         # 最大止损比例 (2%)
 
 # ===== 策略选择 =====
-STRATEGY_NAME = "ma_cross"    # 策略名: ma_cross / rsi_revert
-STRATEGY_KWARGS = {"short_window": SHORT_MA, "long_window": LONG_MA}
+STRATEGY_NAME = "fast_range"    # 策略名: ma_cross / rsi_revert / fast_range
+STRATEGY_KWARGS = {}
+# FastRangeStrategy 默认已开启实盘(paper_trading=False), 使用默认参数即可
+# 如需自定义: STRATEGY_KWARGS = {"bb_period":20, "bb_std":2, "trend_ema_period":50}
 
 # ===== RSI 多周期预警 =====
 RSI_TIMEFRAMES = ["5m", "1h", "2h"]   # 监控的时间周期

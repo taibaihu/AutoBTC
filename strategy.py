@@ -157,6 +157,7 @@ def check_buy_conditions(df: pd.DataFrame, macd: dict, kdj: dict) -> tuple[bool,
 
 class Strategy:
     """基类，所有策略继承此"""
+    paper_trading = True  # 默认模拟, 子类可覆写为 False 开启实盘
 
     def generate_signal(self, df: pd.DataFrame) -> tuple[int, dict]:
         raise NotImplementedError
@@ -216,8 +217,346 @@ class RSIMeanReversionStrategy(Strategy):
         return HOLD, indicators
 
 
+class FastRangeStrategy(Strategy):
+    """
+    快速买入卖出策略 —— 震荡行情专用 (推荐 15m 周期)
+
+    震荡判断:
+      1. ADX < 30 (无强趋势)
+      2. BB带宽在历史均值 0.3~2.0 倍内 (不过分剧烈)
+      3. 7周期均线斜率 < 0.5% (方向不明)
+
+    买入: 价格触及布林下轨(位置 ≤10%) + 前一根K线确认信号
+      - 长下影线: 下影线 > 实体×1.2 且 低点跌破下轨
+      - 小阳线:   收>开 且 实体占比 <60%
+    拒绝买入: 连续3根K线收盘价都低于下轨(贴轨阴跌)
+
+    卖出: 价格触及布林上轨(位置 ≥95%)
+    """
+
+    def __init__(self,
+                 bb_period: int = 20,
+                 bb_std: float = 2.0,
+                 adx_period: int = 14,
+                 adx_threshold: float = 30.0,
+                 bbw_ratio_upper: float = 2.0,
+                 bbw_ratio_lower: float = 0.3,
+                 max_slope: float = 0.005,
+                 shadow_body_ratio: float = 1.2,
+                 max_body_ratio: float = 0.6,
+                 buy_zone: float = 0.10,
+                 sell_zone: float = 0.95,
+                 creep_lookback: int = 3,
+                 trend_ema_period: int = 50):
+        self.bb_period = bb_period
+        self.bb_std = bb_std
+        self.adx_period = adx_period
+        self.adx_threshold = adx_threshold
+        self.bbw_ratio_upper = bbw_ratio_upper
+        self.bbw_ratio_lower = bbw_ratio_lower
+        self.max_slope = max_slope
+        self.shadow_body_ratio = shadow_body_ratio
+        self.max_body_ratio = max_body_ratio
+        self.buy_zone = buy_zone
+        self.sell_zone = sell_zone
+        self.creep_lookback = creep_lookback
+        self.trend_ema_period = trend_ema_period
+        self.paper_trading = False  # 实盘模式
+
+    # ── 布林带 ──────────────────────────────────────────────
+
+    def _calc_bb(self, close: pd.Series):
+        middle = close.rolling(self.bb_period).mean()
+        std = close.rolling(self.bb_period).std()
+        upper = middle + self.bb_std * std
+        lower = middle - self.bb_std * std
+        return upper, middle, lower
+
+    @staticmethod
+    def _bb_position(price: float, upper: float, lower: float) -> float:
+        denom = upper - lower
+        return 0.5 if denom < 1e-8 else (price - lower) / denom
+
+    # ── ADX ────────────────────────────────────────────────
+
+    def _calc_adx(self, df: pd.DataFrame) -> float:
+        """计算 ADX (Wilder 平滑)"""
+        high, low, close = df["high"].values.astype(float), df["low"].values.astype(float), df["close"].values.astype(float)
+        n = len(close)
+
+        tr = np.zeros(n)
+        plus_dm = np.zeros(n)
+        minus_dm = np.zeros(n)
+        for i in range(1, n):
+            tr[i] = max(high[i] - low[i], abs(high[i] - close[i - 1]), abs(low[i] - close[i - 1]))
+            up = high[i] - high[i - 1]
+            dn = low[i - 1] - low[i]
+            if up > dn and up > 0:
+                plus_dm[i] = up
+            if dn > up and dn > 0:
+                minus_dm[i] = dn
+
+        alpha = 1.0 / self.adx_period
+        atr = pd.Series(tr).ewm(alpha=alpha, adjust=False, min_periods=self.adx_period).mean().values
+        if atr[-1] == 0 or np.isnan(atr[-1]):
+            return 0.0
+
+        pdi = pd.Series(plus_dm).ewm(alpha=alpha, adjust=False).mean().values / atr * 100
+        mdi = pd.Series(minus_dm).ewm(alpha=alpha, adjust=False).mean().values / atr * 100
+        d_sum = pdi + mdi
+        dx = np.where(d_sum > 0, np.abs(pdi - mdi) / d_sum * 100, 0)
+        adx_series = pd.Series(dx).ewm(alpha=alpha, adjust=False, min_periods=self.adx_period).mean()
+        return float(adx_series.iloc[-1]) if not pd.isna(adx_series.iloc[-1]) else 0.0
+
+    # ── 震荡判断 ───────────────────────────────────────────
+
+    def _is_ranging(self, df: pd.DataFrame) -> bool:
+        close = df["close"]
+        upper, middle, lower = self._calc_bb(close)
+        bandwidth = (upper - lower) / middle
+
+        cur_bw = float(bandwidth.iloc[-1])
+        avg_bw = float(bandwidth.rolling(24).mean().iloc[-1])
+        if pd.isna(avg_bw) or avg_bw == 0:
+            return False
+
+        # 1) ADX < 30 → 无强趋势
+        adx = self._calc_adx(df)
+        if adx >= self.adx_threshold:
+            return False
+
+        # 2) BB带宽未剧烈扩缩
+        bbw_ok = self.bbw_ratio_lower * avg_bw <= cur_bw <= self.bbw_ratio_upper * avg_bw
+        if not bbw_ok:
+            return False
+
+        # 3) 短期均线斜率平缓 → 无明显单边
+        ma7 = close.rolling(7).mean()
+        slope = abs(float(ma7.iloc[-1] - ma7.iloc[-5]) / max(float(ma7.iloc[-5]), 1e-8))
+        return slope < self.max_slope
+
+    # ── K线确认 ────────────────────────────────────────────
+
+    def _has_long_lower_shadow(self, row, lower_val: float) -> bool:
+        """长下影线: 下影线 > 实体×ratio 且 低点跌破/触及下轨"""
+        o, h, l_val, c = row["open"], row["high"], row["low"], row["close"]
+        body = abs(c - o)
+        lower_shadow = min(o, c) - l_val
+        if body < 1e-8:
+            return lower_shadow > 0 and l_val <= lower_val * 1.02
+        return lower_shadow > body * self.shadow_body_ratio and l_val <= lower_val * 1.02
+
+    def _is_small_bullish(self, row) -> bool:
+        """小阳线: 收>开 且 实体占比 < max_body_ratio (不再要求靠近下轨)"""
+        o, h, l_val, c = row["open"], row["high"], row["low"], row["close"]
+        if c <= o:
+            return False
+        total_range = h - l_val
+        if total_range < 1e-8:
+            return False
+        return (c - o) / total_range < self.max_body_ratio
+
+    # ── 贴轨阴跌检测 ──────────────────────────────────────
+
+    def _is_creeping_decline(self, df: pd.DataFrame) -> bool:
+        """
+        连续 creep_lookback 根K线收盘价全部低于布林下轨 → 贴轨阴跌
+        """
+        close = df["close"]
+        upper, middle, lower = self._calc_bb(close)
+        if len(close) < self.creep_lookback:
+            return False
+        for i in range(1, self.creep_lookback + 1):
+            c = float(close.iloc[-i])
+            l = float(lower.iloc[-i])
+            if c >= l:
+                return False
+        return True
+
+    # ── 主信号 ────────────────────────────────────────────
+
+    def generate_signal(self, df: pd.DataFrame) -> tuple[int, dict]:
+        require = max(self.trend_ema_period, self.adx_period + self.bb_period) + 30
+        if len(df) < require:
+            return HOLD, {}
+
+        close = df["close"]
+        upper, middle, lower = self._calc_bb(close)
+        u = float(upper.iloc[-1])
+        m = float(middle.iloc[-1])
+        l_val = float(lower.iloc[-1])
+        cur_price = float(close.iloc[-1])
+        pos = self._bb_position(cur_price, u, l_val)
+        adx_val = self._calc_adx(df)
+
+        indicators = {
+            "bb_position": round(pos, 4),
+            "bb_upper": round(u, 2),
+            "bb_middle": round(m, 2),
+            "bb_lower": round(l_val, 2),
+            "adx": round(adx_val, 1),
+        }
+
+        # 非震荡行情 → 不交易
+        if not self._is_ranging(df):
+            indicators["range"] = 0
+            return HOLD, indicators
+        indicators["range"] = 1
+
+        # 贴轨阴跌 → 不买入
+        creeping = self._is_creeping_decline(df)
+
+        # ── 大方向过滤 ──
+        ema_trend = close.ewm(span=self.trend_ema_period, adjust=False).mean().iloc[-1]
+        indicators["trend_ema"] = round(float(ema_trend), 2)
+        is_downtrend = cur_price < ema_trend
+        indicators["downtrend"] = 1 if is_downtrend else 0
+
+        # 卖出: 价格触及上轨 (看收盘价)
+        if pos >= self.sell_zone:
+            return SELL, indicators
+
+        # ── 买入: 前一根K线的低点触及/跌破下轨 + 确认反弹 ──
+        #       大方向下跌时不抄底
+        if not creeping and not is_downtrend:
+            prev = df.iloc[-2]
+            u_prev = float(upper.iloc[-2])
+            l_prev = float(lower.iloc[-2])
+            prev_low = float(prev["low"])
+
+            low_pos = self._bb_position(prev_low, u_prev, l_prev)
+            low_touched_band = low_pos <= self.buy_zone
+
+            if low_touched_band:
+                indicators["low_pos"] = round(low_pos, 4)
+                indicators["low_touched"] = 1
+
+                shadow_ok = self._has_long_lower_shadow(prev, l_prev)
+                bull_ok = self._is_small_bullish(prev)
+                if shadow_ok or bull_ok:
+                    indicators["confirmed_by"] = "长下影线" if shadow_ok else "小阳线"
+                    return BUY, indicators
+        elif creeping:
+            indicators["creeping"] = 1
+
+        return HOLD, indicators
+
+
+class FastRangeShortStrategy(FastRangeStrategy):
+    """
+    快速做空策略 —— 震荡行情专用 (推荐 15m 周期)
+
+    逻辑是 FastRangeStrategy 的镜像:
+
+    开空(SELL): 前一根K线高点触及布林上轨(high_pos ≥ sell_zone) + 反转确认
+      - 长上影线: 上影线 > 实体×ratio 且 高点突破上轨
+      - 小阴线:   收<开 且 实体占比 < max_body_ratio
+    拒绝开空: 连续3根K线收盘高于上轨 (贴轨上涨, 不摸底)
+
+    平空(BUY): 价格触及布林下轨 (收盘价位置 ≤ buy_zone)
+    """
+
+    def _has_long_upper_shadow(self, row, upper_val: float) -> bool:
+        """长上影线: 上影线 > 实体×ratio 且 高点突破上轨"""
+        o, h, l_val, c = row["open"], row["high"], row["low"], row["close"]
+        body = abs(c - o)
+        upper_shadow = h - max(o, c)
+        if body < 1e-8:
+            return upper_shadow > 0 and h >= upper_val * 0.98
+        return upper_shadow > body * self.shadow_body_ratio and h >= upper_val * 0.98
+
+    def _is_small_bearish(self, row) -> bool:
+        """小阴线: 收<开 且 实体占比 < max_body_ratio"""
+        o, h, l_val, c = row["open"], row["high"], row["low"], row["close"]
+        if c >= o:
+            return False
+        total_range = h - l_val
+        if total_range < 1e-8:
+            return False
+        return (o - c) / total_range < self.max_body_ratio
+
+    def _is_creeping_rise(self, df: pd.DataFrame) -> bool:
+        """
+        连续3根K线收盘价全部高于布林上轨 → 贴轨上涨, 不开空
+        """
+        close = df["close"]
+        upper, middle, lower = self._calc_bb(close)
+        lookback = self.creep_lookback
+        if len(close) < lookback:
+            return False
+        for i in range(1, lookback + 1):
+            if float(close.iloc[-i]) <= float(upper.iloc[-i]):
+                return False
+        return True
+
+    def generate_signal(self, df: pd.DataFrame) -> tuple[int, dict]:
+        require = max(self.trend_ema_period, self.adx_period + self.bb_period) + 30
+        if len(df) < require:
+            return HOLD, {}
+
+        close = df["close"]
+        upper, middle, lower = self._calc_bb(close)
+        u = float(upper.iloc[-1])
+        m = float(middle.iloc[-1])
+        l_val = float(lower.iloc[-1])
+        cur_price = float(close.iloc[-1])
+        pos = self._bb_position(cur_price, u, l_val)
+        adx_val = self._calc_adx(df)
+
+        indicators = {
+            "bb_position": round(pos, 4),
+            "bb_upper": round(u, 2),
+            "bb_middle": round(m, 2),
+            "bb_lower": round(l_val, 2),
+            "adx": round(adx_val, 1),
+        }
+
+        # 非震荡 → 不交易
+        if not self._is_ranging(df):
+            indicators["range"] = 0
+            return HOLD, indicators
+        indicators["range"] = 1
+
+        creeping_rise = self._is_creeping_rise(df)
+
+        # ── 大方向过滤：EMA50 ──
+        ema_trend = close.ewm(span=self.trend_ema_period, adjust=False).mean().iloc[-1]
+        indicators["trend_ema"] = round(float(ema_trend), 2)
+        is_uptrend = cur_price > ema_trend
+        indicators["uptrend"] = 1 if is_uptrend else 0
+
+        # ── 平空(BUY): 价格触及下轨 → 买入平仓  ──
+        if pos <= self.buy_zone:
+            return BUY, indicators
+
+        # ── 开空(SELL): 前一根K线高点触及上轨 + 反转确认 ──
+        #       大方向上涨时不开空
+        if not creeping_rise and not is_uptrend:
+            prev = df.iloc[-2]
+            u_prev = float(upper.iloc[-2])
+            l_prev = float(lower.iloc[-2])
+            prev_high = float(prev["high"])
+
+            high_pos = self._bb_position(prev_high, u_prev, l_prev)
+            high_touched_band = high_pos >= self.sell_zone
+
+            if high_touched_band:
+                indicators["high_pos"] = round(high_pos, 4)
+                shadow_ok = self._has_long_upper_shadow(prev, u_prev)
+                bear_ok = self._is_small_bearish(prev)
+                if shadow_ok or bear_ok:
+                    indicators["confirmed_by"] = "长上影线" if shadow_ok else "小阴线"
+                    return SELL, indicators
+        else:
+            indicators["creeping_rise"] = 1
+
+        return HOLD, indicators
+
+
 # 策略注册表 —— 在 config.py 中通过 STRATEGY_NAME 选择
 STRATEGIES = {
     "ma_cross": MACrossoverStrategy,
     "rsi_revert": RSIMeanReversionStrategy,
+    "fast_range": FastRangeStrategy,
+    "fast_range_short": FastRangeShortStrategy,
 }
