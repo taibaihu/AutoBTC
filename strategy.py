@@ -546,9 +546,16 @@ class FastRangeShortStrategy(FastRangeStrategy):
         is_uptrend = cur_price > ema_trend
         indicators["uptrend"] = 1 if is_uptrend else 0
 
-        # ── 平空(BUY): 价格触及下轨 → 买入平仓  ──
+        # ── 平空(BUY): 价格触及下轨 + K线反转确认  ──
         if pos <= self.buy_zone:
-            return BUY, indicators
+            prev = df.iloc[-2]
+            l_prev = float(lower.iloc[-2])
+            shadow_ok = self._has_long_lower_shadow(prev, l_prev)
+            bull_ok = self._is_small_bullish(prev)
+            if shadow_ok or bull_ok:
+                indicators["confirmed_by"] = "长下影线" if shadow_ok else "小阳线"
+                return BUY, indicators
+            indicators["buy_rejected"] = "缺少反转确认"
 
         # ── 开空(SELL): 前一根K线高点触及上轨 + 反转确认 ──
         #       大方向上涨时不开空
