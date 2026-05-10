@@ -246,6 +246,8 @@ class FastRangeStrategy(Strategy):
                  max_slope: float = 0.01,
                  shadow_body_ratio: float = 1.2,
                  max_body_ratio: float = 0.6,
+                 sell_shadow_ratio: float = 1.5,
+                 sell_max_body_ratio: float = 0.5,
                  buy_zone: float = 0.10,
                  sell_zone: float = 0.95,
                  creep_lookback: int = 3,
@@ -262,6 +264,8 @@ class FastRangeStrategy(Strategy):
         self.max_slope = max_slope
         self.shadow_body_ratio = shadow_body_ratio
         self.max_body_ratio = max_body_ratio
+        self.sell_shadow_ratio = sell_shadow_ratio
+        self.sell_max_body_ratio = sell_max_body_ratio
         self.buy_zone = buy_zone
         self.sell_zone = sell_zone
         self.creep_lookback = creep_lookback
@@ -582,7 +586,11 @@ class FastRangeShortStrategy(FastRangeStrategy):
 
         # ── 开空(SELL): 前一根K线高点触及上轨 + 反转确认 ──
         #       大方向上涨时不开空
-        if not creeping_rise and not is_uptrend:
+        if creeping_rise:
+            indicators["creeping_rise"] = 1
+        elif is_uptrend:
+            indicators["uptrend_block"] = 1
+        else:
             prev = df.iloc[-2]
             u_prev = float(upper.iloc[-2])
             l_prev = float(lower.iloc[-2])
@@ -599,8 +607,6 @@ class FastRangeShortStrategy(FastRangeStrategy):
                     indicators["confirmed_by"] = "长上影线" if shadow_ok else "小阴线"
                     self._last_trade_bar = len(df)
                     return SELL, indicators
-        else:
-            indicators["creeping_rise"] = 1
 
         return HOLD, indicators
 

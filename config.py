@@ -34,8 +34,8 @@ MAX_LOSS_RATE = 0.02         # 最大止损比例 (2%)
 
 # ===== 策略选择 =====
 STRATEGY_NAME = "fast_range"    # 策略名: ma_cross / rsi_revert / fast_range
-STRATEGY_KWARGS = {"buy_zone": 0.15, "cooldown_bars": 2}
-# cooldown_bars: 平仓后等待多少根K线再入场 (15分钟K线, 冷-却30分钟=2根)
+STRATEGY_KWARGS = {"buy_zone": 0.20, "cooldown_bars": 2}
+# cooldown_bars: 平仓后等待多少根K线再入场 (15分钟K线, 冷却30分钟=2根)
 # 如需自定义: STRATEGY_KWARGS = {"bb_period":20, "bb_std":2, "trend_ema_period":50}
 
 # ===== RSI 多周期预警 =====
