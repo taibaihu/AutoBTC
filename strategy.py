@@ -3,6 +3,7 @@
 import pandas as pd
 import numpy as np
 from typing import Optional
+from config import PAPER_TRADING
 import config as cfg
 
 # 信号枚举
@@ -224,15 +225,15 @@ class FastRangeStrategy(Strategy):
 
     震荡判断:
       1. ADX < 30 (无强趋势)
-      2. BB带宽在历史均值 0.3~2.0 倍内 (不过分剧烈)
-      3. 7周期均线斜率 < 0.5% (方向不明)
+      2. BB带宽在历史均值 0.25~2.0 倍内 (不过分剧烈)
+      3. 7周期均线斜率 < 1.0% (方向不明)
 
-    买入: 价格触及布林下轨(位置 ≤10%) + 前一根K线确认信号
+    买入: 价格触及布林下轨(位置 ≤15%) + 前一根K线确认信号
       - 长下影线: 下影线 > 实体×1.2 且 低点跌破下轨
       - 小阳线:   收>开 且 实体占比 <60%
     拒绝买入: 连续3根K线收盘价都低于下轨(贴轨阴跌)
-
-    卖出: 价格触及布林上轨(位置 ≥95%)
+    
+    卖出: 价格触及布林上轨 + 长上影线/小阴线确认
     """
 
     def __init__(self,
@@ -241,14 +242,17 @@ class FastRangeStrategy(Strategy):
                  adx_period: int = 14,
                  adx_threshold: float = 30.0,
                  bbw_ratio_upper: float = 2.0,
-                 bbw_ratio_lower: float = 0.3,
-                 max_slope: float = 0.005,
+                 bbw_ratio_lower: float = 0.25,
+                 max_slope: float = 0.01,
                  shadow_body_ratio: float = 1.2,
                  max_body_ratio: float = 0.6,
                  buy_zone: float = 0.10,
                  sell_zone: float = 0.95,
                  creep_lookback: int = 3,
-                 trend_ema_period: int = 50):
+                 trend_ema_period: int = 100,
+                 cooldown_bars: int = 2,
+                 sell_shadow_body_ratio: float = 1.2,
+                 sell_max_body_ratio: float = 0.6):
         self.bb_period = bb_period
         self.bb_std = bb_std
         self.adx_period = adx_period
@@ -262,7 +266,11 @@ class FastRangeStrategy(Strategy):
         self.sell_zone = sell_zone
         self.creep_lookback = creep_lookback
         self.trend_ema_period = trend_ema_period
+        self.cooldown_bars = cooldown_bars
+        self.sell_shadow_body_ratio = sell_shadow_body_ratio
+        self.sell_max_body_ratio = sell_max_body_ratio
         self.paper_trading = cfg.PAPER_TRADING
+        self._last_trade_bar = -9999
 
     # ── 布林带 ──────────────────────────────────────────────
 
@@ -362,23 +370,23 @@ class FastRangeStrategy(Strategy):
         return (c - o) / total_range < self.max_body_ratio
 
     def _has_long_upper_shadow(self, row, upper_val: float) -> bool:
-        """长上影线: 上影线 > 实体×ratio 且 高点突破上轨"""
+        """长上影线: 上影线 > 实体×sell_ratio 且 高点突破上轨"""
         o, h, l_val, c = row["open"], row["high"], row["low"], row["close"]
         body = abs(c - o)
         upper_shadow = h - max(o, c)
         if body < 1e-8:
             return upper_shadow > 0 and h >= upper_val * 0.98
-        return upper_shadow > body * self.shadow_body_ratio and h >= upper_val * 0.98
+        return upper_shadow > body * self.sell_shadow_body_ratio and h >= upper_val * 0.98
 
     def _is_small_bearish(self, row) -> bool:
-        """小阴线: 收<开 且 实体占比 < max_body_ratio"""
+        """小阴线: 收<开 且 实体占比 < sell_max_body_ratio"""
         o, h, l_val, c = row["open"], row["high"], row["low"], row["close"]
         if c >= o:
             return False
         total_range = h - l_val
         if total_range < 1e-8:
             return False
-        return (o - c) / total_range < self.max_body_ratio
+        return (o - c) / total_range < self.sell_max_body_ratio
 
     # ── 贴轨阴跌检测 ──────────────────────────────────────
 
@@ -440,6 +448,12 @@ class FastRangeStrategy(Strategy):
         is_downtrend = cur_price < ema_trend
         indicators["downtrend"] = 1 if is_downtrend else 0
 
+        # ── 冷却检查：最近交易后等待足够 K 线再入场 ──
+        bars_since_trade = len(df) - self._last_trade_bar
+        if bars_since_trade < self.cooldown_bars:
+            indicators["cooldown"] = bars_since_trade
+            return HOLD, indicators
+
         # 卖出: 价格触及上轨 + K线反转确认
         if pos >= self.sell_zone:
             prev = df.iloc[-2]
@@ -448,6 +462,7 @@ class FastRangeStrategy(Strategy):
             bear_ok = self._is_small_bearish(prev)
             if shadow_ok or bear_ok:
                 indicators["confirmed_by"] = "长上影线" if shadow_ok else "小阴线"
+                self._last_trade_bar = len(df)
                 return SELL, indicators
             indicators["sell_rejected"] = "缺少反转确认"
 
@@ -470,6 +485,7 @@ class FastRangeStrategy(Strategy):
                 bull_ok = self._is_small_bullish(prev)
                 if shadow_ok or bull_ok:
                     indicators["confirmed_by"] = "长下影线" if shadow_ok else "小阳线"
+                    self._last_trade_bar = len(df)
                     return BUY, indicators
         elif creeping:
             indicators["creeping"] = 1
@@ -546,6 +562,12 @@ class FastRangeShortStrategy(FastRangeStrategy):
         is_uptrend = cur_price > ema_trend
         indicators["uptrend"] = 1 if is_uptrend else 0
 
+        # ── 冷却检查：与做多策略共享冷却状态 ──
+        bars_since_trade = len(df) - self._last_trade_bar
+        if bars_since_trade < self.cooldown_bars:
+            indicators["cooldown"] = bars_since_trade
+            return HOLD, indicators
+
         # ── 平空(BUY): 价格触及下轨 + K线反转确认  ──
         if pos <= self.buy_zone:
             prev = df.iloc[-2]
@@ -554,6 +576,7 @@ class FastRangeShortStrategy(FastRangeStrategy):
             bull_ok = self._is_small_bullish(prev)
             if shadow_ok or bull_ok:
                 indicators["confirmed_by"] = "长下影线" if shadow_ok else "小阳线"
+                self._last_trade_bar = len(df)
                 return BUY, indicators
             indicators["buy_rejected"] = "缺少反转确认"
 
@@ -574,6 +597,7 @@ class FastRangeShortStrategy(FastRangeStrategy):
                 bear_ok = self._is_small_bearish(prev)
                 if shadow_ok or bear_ok:
                     indicators["confirmed_by"] = "长上影线" if shadow_ok else "小阴线"
+                    self._last_trade_bar = len(df)
                     return SELL, indicators
         else:
             indicators["creeping_rise"] = 1
