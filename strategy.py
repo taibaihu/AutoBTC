@@ -246,8 +246,6 @@ class FastRangeStrategy(Strategy):
                  max_slope: float = 0.01,
                  shadow_body_ratio: float = 1.2,
                  max_body_ratio: float = 0.6,
-                 sell_shadow_ratio: float = 1.5,
-                 sell_max_body_ratio: float = 0.5,
                  buy_zone: float = 0.10,
                  sell_zone: float = 0.95,
                  creep_lookback: int = 3,
@@ -264,7 +262,6 @@ class FastRangeStrategy(Strategy):
         self.max_slope = max_slope
         self.shadow_body_ratio = shadow_body_ratio
         self.max_body_ratio = max_body_ratio
-        self.sell_shadow_ratio = sell_shadow_ratio
         self.sell_max_body_ratio = sell_max_body_ratio
         self.buy_zone = buy_zone
         self.sell_zone = sell_zone
@@ -272,7 +269,6 @@ class FastRangeStrategy(Strategy):
         self.trend_ema_period = trend_ema_period
         self.cooldown_bars = cooldown_bars
         self.sell_shadow_body_ratio = sell_shadow_body_ratio
-        self.sell_max_body_ratio = sell_max_body_ratio
         self.paper_trading = cfg.PAPER_TRADING
         self._last_trade_bar = -9999
 
