@@ -24,6 +24,8 @@ class RiskManager:
     trade_count: int = 0
     _position: bool = False
     _entry_price: float = 0.0
+    _short_position: bool = False
+    _short_entry_price: float = 0.0
     _reset_day: str = field(default_factory=lambda: time.strftime("%Y-%m-%d"))
 
     def __post_init__(self):
@@ -40,6 +42,18 @@ class RiskManager:
         """仓位名义价值 = 保证金 × 杠杆"""
         return self.max_position_usdt * self.leverage
 
+    def has_position(self) -> bool:
+        """是否有任意方向持仓"""
+        return self._position or self._short_position
+
+    def position_side(self) -> Optional[str]:
+        """返回当前持仓方向: LONG / SHORT / None"""
+        if self._position:
+            return "LONG"
+        if self._short_position:
+            return "SHORT"
+        return None
+
     def can_trade(self) -> tuple[bool, str]:
         """返回 (是否可以交易, 原因)"""
         self._check_day_reset()
@@ -51,10 +65,43 @@ class RiskManager:
         return True, "OK"
 
     def calc_pnl(self, current_price: float) -> float:
-        """统一盈亏计算（含杠杆），避免调用方重复手算"""
+        """多头盈亏计算（含杠杆）"""
         if not self._position:
             return 0.0
         return (current_price - self._entry_price) / self._entry_price * self._position_value()
+
+    def calc_short_pnl(self, current_price: float) -> float:
+        """空头盈亏计算（含杠杆），跌则赚"""
+        if not self._short_position:
+            return 0.0
+        return (self._short_entry_price - current_price) / self._short_entry_price * self._position_value()
+
+    def should_close_short(self, current_price: float) -> Optional[str]:
+        """空头止盈/止损判断。空头: 跌=盈, 涨=亏"""
+        if not self._short_position:
+            return None
+        change = (self._short_entry_price - current_price) / self._short_entry_price
+        # change > 0 表示跌了，盈利；change < 0 表示涨了，亏损
+        if change >= self.min_profit_rate:
+            return f"空头止盈 (+{change:.2%})"
+        if change <= -self.max_loss_rate:
+            return f"空头止损 ({change:.2%})"
+        return None
+
+    def open_short(self, entry_price: float):
+        """开空"""
+        self._short_position = True
+        self._short_entry_price = entry_price
+
+    def close_short(self, pnl: float, exit_price: float = 0.0):
+        """记录空头平仓盈亏"""
+        self.daily_pnl += pnl
+        self.trade_count += 1
+        execute(
+            "INSERT INTO trades (entry_price, exit_price, pnl, symbol) VALUES (%s, %s, %s, %s)",
+            (self._short_entry_price, exit_price, round(pnl, 4), SYMBOL),
+        )
+        self._short_position = False
 
     def record_trade(self, pnl: float, exit_price: float = 0.0):
         """记录一笔成交盈亏，持久化到 MySQL"""
@@ -90,10 +137,20 @@ class RiskManager:
         return self._position
 
     @property
+    def position(self) -> bool:
+        return self._position
+
+    @property
+    def short_position(self) -> bool:
+        return self._short_position
+
+    @property
     def summary(self) -> dict:
         self._check_day_reset()
         return {
             "daily_pnl": round(self.daily_pnl, 2),
             "trade_count": self.trade_count,
             "position": self._position,
+            "short_position": self._short_position,
+            "side": self.position_side(),
         }

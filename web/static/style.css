@@ -1,0 +1,147 @@
+/* ── reset & base ── */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:14px}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background:#0d1117;color:#c9d1d9;min-height:100vh
+}
+a{color:#58a6ff;text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ── nav ── */
+.nav{
+  background:#161b22;border-bottom:1px solid #30363d;
+  position:sticky;top:0;z-index:100
+}
+.nav-inner{
+  max-width:1400px;margin:0 auto;display:flex;align-items:center;
+  padding:0 24px;height:52px;gap:32px
+}
+.nav-brand{font-size:1.15rem;font-weight:700;color:#f0f6fc!important;display:flex;align-items:center;gap:6px}
+.nav-links{display:flex;gap:8px}
+.nav-link{
+  padding:6px 14px;border-radius:6px;color:#8b949e!important;font-size:.93rem;
+  transition:all .15s
+}
+.nav-link:hover,.nav-link.active{background:#1f2937;color:#f0f6fc!important;text-decoration:none}
+.nav-status{margin-left:auto;font-size:.85rem;color:#8b949e}
+
+/* ── main ── */
+.main{max-width:1400px;margin:0 auto;padding:24px}
+
+/* ── cards grid ── */
+.row{display:flex;gap:16px;flex-wrap:wrap}
+.col-4{flex:1;min-width:200px}
+.stat-card{
+  background:#161b22;border:1px solid #30363d;border-radius:8px;
+  padding:18px 20px;text-align:center
+}
+.stat-card .label{font-size:.82rem;color:#8b949e;margin-bottom:6px}
+.stat-card .value{font-size:1.6rem;font-weight:700;font-variant-numeric:tabular-nums}
+.stat-card .sub{font-size:.82rem;color:#8b949e;margin-top:4px}
+.green{color:#3fb950}
+.red{color:#f85149}
+.blue{color:#58a6ff}
+.yellow{color:#d29922}
+
+/* ── section ── */
+.section{margin-top:28px}
+.section-title{
+  font-size:1.05rem;font-weight:600;margin-bottom:12px;
+  display:flex;align-items:center;gap:10px
+}
+.section-title .count{font-size:.82rem;color:#8b949e;font-weight:400}
+
+/* ── table ── */
+.table-wrap{overflow-x:auto;border:1px solid #30363d;border-radius:8px}
+table{width:100%;border-collapse:collapse;font-size:.9rem}
+th{
+  background:#161b22;padding:10px 12px;text-align:left;
+  font-weight:600;color:#8b949e;white-space:nowrap;
+  border-bottom:1px solid #30363d
+}
+td{padding:9px 12px;border-bottom:1px solid #21262d;white-space:nowrap}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#1c2333}
+.clickable{cursor:pointer}
+.clickable:hover{color:#58a6ff}
+
+/* ── status badges ── */
+.badge{
+  display:inline-block;padding:2px 8px;border-radius:10px;
+  font-size:.78rem;font-weight:500
+}
+.badge-green{backgroundrgba(63,185,80,.15);color:#3fb950}
+.badge-red{background:rgba(248,81,73,.15);color:#f85149}
+.badge-yellow{background:rgba(210,153,34,.15);color:#d29922}
+.badge-gray{background:rgba(139,148,158,.15);color:#8b949e}
+.badge-blue{background:rgba(88,166,255,.15);color:#58a6ff}
+
+/* ── filters ── */
+.filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.filters select,.filters input{
+  background:#0d1117;border:1px solid #30363d;border-radius:6px;
+  color:#c9d1d9;padding:6px 10px;font-size:.85rem;outline:none
+}
+.filters select:focus,.filters input:focus{border-color:#58a6ff}
+.filters .btn{
+  background:#21262d;border:1px solid #30363d;border-radius:6px;
+  color:#c9d1d9;padding:6px 14px;font-size:.85rem;cursor:pointer
+}
+.filters .btn:hover{background:#30363d}
+
+/* ── modal ── */
+.modal-overlay{
+  display:none;position:fixed;top:0;left:0;right:0;bottom:0;
+  background:rgba(1,4,9,.7);z-index:200;justify-content:center;align-items:center
+}
+.modal-overlay.show{display:flex}
+.modal{
+  background:#161b22;border:1px solid #30363d;border-radius:10px;
+  max-width:640px;width:90%;max-height:80vh;overflow-y:auto
+}
+.modal-header{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:16px 20px;border-bottom:1px solid #30363d
+}
+.modal-header h3{font-size:1rem}
+.modal-close{background:none;border:none;color:#8b949e;font-size:1.4rem;cursor:pointer;padding:0 4px}
+.modal-close:hover{color:#f0f6fc}
+.modal-body{padding:20px}
+.detail-grid{display:grid;grid-template-columns:auto 1fr;gap:8px 20px}
+.detail-grid .key{color:#8b949e;font-size:.88rem}
+.detail-grid .val{font-size:.88rem;text-align:right;font-variant-numeric:tabular-nums}
+
+/* ── strategy params ── */
+.params-wrap{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:.82rem;color:#8b949e}
+.params-wrap span{white-space:nowrap}
+
+/* ── loading / empty ── */
+.loading{text-align:center;padding:60px 0;color:#8b949e;font-size:1rem}
+.empty{text-align:center;padding:40px 0;color:#484f58;font-size:.9rem}
+
+/* ── pnl spark ── */
+.pnl-pos{color:#3fb950}
+.pnl-neg{color:#f85149}
+.pnl-zero{color:#8b949e}
+
+/* ── strategy description ── */
+.desc-card{
+  background:#161b22;border:1px solid #30363d;border-radius:8px;padding:20px
+}
+.desc-summary{color:#c9d1d9;font-size:.95rem;line-height:1.6;margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #21262d}
+.desc-group{margin-bottom:14px}
+.desc-group:last-child{margin-bottom:0}
+.desc-group-title{color:#58a6ff;font-size:.88rem;font-weight:600;margin-bottom:8px}
+.desc-list{margin:0;padding-left:20px;list-style:none}
+.desc-list li{position:relative;color:#8b949e;font-size:.85rem;line-height:1.7}
+.desc-list li::before{content:"·";position:absolute;left:-14px;color:#58a6ff;font-weight:700}
+
+/* ── responsive ── */
+@media(max-width:720px){
+  .nav-inner{padding:0 16px;gap:16px}
+  .nav-links{gap:4px}
+  .nav-link{padding:6px 10px;font-size:.85rem}
+  .main{padding:16px}
+  .col-4{min-width:140px}
+}

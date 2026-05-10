@@ -9,7 +9,7 @@ import logging
 from strategy_manager import (
     StrategyConfig, load_strategy, save_strategy, list_strategies, apply_to_config,
 )
-from db_manager import execute, fetch_one, init_database
+from db_manager import execute, fetch_one, fetch_all, init_database, get_real_order, get_real_orders, get_real_order_stats
 
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -185,6 +185,87 @@ def cmd_apply(args):
     print(f"LEVERAGE          = {LEVERAGE}x")
 
 
+# ── 实盘订单管理 ──────────────────────────────────────────────
+
+
+def cmd_orders_list(args):
+    orders = get_real_orders(
+        symbol=args.symbol,
+        status=args.status,
+        side=args.side,
+        paper_trading=None if args.all else 0,  # 默认仅实盘
+        start=args.start,
+        end=args.end,
+        limit=args.limit,
+    )
+    if not orders:
+        print("暂无订单记录")
+        return
+
+    header = f"{'ID':<6} {'时间':<20} {'交易对':<12} {'方向':<6} {'状态':<12} {'数量':<12} {'成交价':<12} {'金额(U)':<12} {'盈亏':<10} {'策略':<14} {'模式':<5}"
+    print(header)
+    print("-" * 125)
+    for o in orders:
+        oid = o["id"]
+        t = o["created_at"].strftime("%m-%d %H:%M") if hasattr(o["created_at"], "strftime") else str(o["created_at"])
+        sym = o["symbol"]
+        side = o["side"]
+        status = o["status"]
+        qty = o["executed_qty"] or o["orig_qty"] or 0
+        avg_p = o["avg_price"] or o["price"] or 0
+        vol = o["cum_quote"] or 0
+        pnl = o["pnl"]
+        pnl_str = f"{pnl:+.2f}" if pnl is not None else "-"
+        strat = o["strategy_name"] or "-"
+        pt = "实盘" if not o["paper_trading"] else "模拟"
+        print(f"{oid:<6} {t:<20} {sym:<12} {side:<6} {status:<12} {float(qty):<12.6f} {float(avg_p):<12.2f} {float(vol):<12.2f} {pnl_str:<10} {strat:<14} {pt:<5}")
+
+
+def cmd_orders_view(args):
+    o = get_real_order(args.order_id)
+    if not o:
+        print(f"订单 #{args.order_id} 不存在")
+        return
+
+    print(f"订单ID:      {o['id']}")
+    print(f"币安单号:    {o['binance_order_id']}")
+    print(f"客户端ID:    {o['client_order_id'] or '-'}")
+    print(f"交易对:      {o['symbol']}")
+    print(f"方向:        {o['side']} ({o['position_side'] or '-'})")
+    print(f"类型:        {o['order_type']}")
+    print(f"状态:        {o['status']}")
+    print(f"价格:        {o['price'] or '-'}")
+    print(f"成交均价:    {o['avg_price'] or '-'}")
+    print(f"原始数量:    {o['orig_qty'] or '-'}")
+    print(f"成交数量:    {o['executed_qty'] or '-'}")
+    print(f"成交金额:    {o['cum_quote'] or '-'} USDT")
+    print(f"杠杆:        {o['leverage'] or '-'}x")
+    print(f"策略:        {o['strategy_name'] or '-'}")
+    print(f"模式:        {'模拟' if o['paper_trading'] else '实盘'}")
+    print(f"盈亏:        {o['pnl']:+.2f} USDT" if o['pnl'] is not None else "盈亏:        -")
+    print(f"创建时间:    {o['created_at']}")
+    print(f"更新时间:    {o['updated_at']}")
+
+
+def cmd_orders_stats(args):
+    stats = get_real_order_stats(
+        symbol=args.symbol,
+        start=args.start,
+        end=args.end,
+        paper_trading=None if args.all else 0,  # 默认仅实盘
+    )
+    print(f"总交易次数:  {stats['total_trades']}")
+    print(f"盈利次数:    {stats['wins']}")
+    print(f"亏损次数:    {stats['losses']}")
+    print(f"保本次数:    {stats['breaks_even']}")
+    print(f"胜率:        {stats['win_rate']}%")
+    print(f"总盈亏:      {stats['total_pnl']:+.2f} USDT")
+    print(f"平均盈亏:    {stats['avg_pnl']:+.2f} USDT")
+    print(f"最大盈利:    {stats['max_win']:+.2f} USDT")
+    print(f"最大亏损:    {stats['max_loss']:+.2f} USDT")
+    print(f"总成交额:    {stats['total_volume']:.2f} USDT")
+
+
 def main():
     parser = argparse.ArgumentParser(description="策略管理工具")
     sub = parser.add_subparsers(dest="command")
@@ -214,6 +295,30 @@ def main():
     p_apply = sub.add_parser("apply", help="测试将策略应用到 config")
     p_apply.add_argument("user", default="default", nargs="?", help="用户标识")
 
+    # ── orders 子命令集 ──
+    p_orders = sub.add_parser("orders", help="实盘订单管理")
+    orders_sub = p_orders.add_subparsers(dest="order_cmd")
+
+    p_olist = orders_sub.add_parser("list", help="列出实盘订单")
+    p_olist.add_argument("--symbol", "-s", help="交易对筛选")
+    p_olist.add_argument("--status", choices=["NEW", "FILLED", "PARTIALLY_FILLED", "CANCELED"], help="订单状态")
+    p_olist.add_argument("--side", choices=["BUY", "SELL"], help="买卖方向")
+    p_olist.add_argument("--start", help="起始时间 (YYYY-MM-DD HH:MM:SS)")
+    p_olist.add_argument("--end", help="截止时间")
+    p_olist.add_argument("--limit", type=int, default=50, help="返回条数")
+    p_olist.add_argument("--real", action="store_true", help="仅实盘")
+    p_olist.add_argument("--all", action="store_true", help="包含模拟+实盘")
+
+    p_oview = orders_sub.add_parser("view", help="查看订单详情")
+    p_oview.add_argument("order_id", type=int, help="订单ID")
+
+    p_ostats = orders_sub.add_parser("stats", help="交易统计")
+    p_ostats.add_argument("--symbol", "-s", help="交易对")
+    p_ostats.add_argument("--start", help="起始时间")
+    p_ostats.add_argument("--end", help="截止时间")
+    p_ostats.add_argument("--real", action="store_true", help="仅实盘")
+    p_ostats.add_argument("--all", action="store_true", help="包含模拟+实盘")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -231,7 +336,19 @@ def main():
         "disable": cmd_disable,
         "apply": cmd_apply,
     }
-    cmds[args.command](args)
+
+    if args.command == "orders":
+        orders_cmds = {
+            "list": cmd_orders_list,
+            "view": cmd_orders_view,
+            "stats": cmd_orders_stats,
+        }
+        if args.order_cmd is None:
+            p_orders.print_help()
+            return
+        orders_cmds[args.order_cmd](args)
+    else:
+        cmds[args.command](args)
 
 
 if __name__ == "__main__":

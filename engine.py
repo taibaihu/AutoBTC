@@ -171,6 +171,20 @@ class FuturesEngine:
         quantity = self.calc_contract_amount(amount, price)
         return self.exchange.create_market_sell_order(self._symbol, quantity, {"positionSide": "LONG"})
 
+    # ── 做空 ────────────────────────────────────────────────
+
+    def market_sell_short(self, symbol: str, amount: float) -> dict:
+        """市价开空 (amount 为 USDT 金额)"""
+        price = self.get_current_price(symbol) or self.get_current_price(self._symbol)
+        quantity = self.calc_contract_amount(amount, price)
+        return self.exchange.create_market_sell_order(self._symbol, quantity, {"positionSide": "SHORT"})
+
+    def market_buy_cover(self, symbol: str, amount: float) -> dict:
+        """市价平空 (amount 为 USDT 金额)"""
+        price = self.get_current_price(symbol) or self.get_current_price(self._symbol)
+        quantity = self.calc_contract_amount(amount, price)
+        return self.exchange.create_market_buy_order(self._symbol, quantity, {"positionSide": "SHORT"})
+
     def get_current_price(self, symbol: str) -> float:
         """获取当前实时价格"""
         try:

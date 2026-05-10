@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>量化交易仪表盘</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="/">📊 量化交易</a>
+    <div class="nav-links">
+      <a href="/" class="nav-link" data-page="dashboard">仪表盘</a>
+      <a href="/orders" class="nav-link" data-page="orders">订单</a>
+      <a href="/strategies" class="nav-link" data-page="strategies">策略</a>
+    </div>
+    <span class="nav-status" id="navStatus">● 运行中</span>
+  </div>
+</nav>
+
+<main class="main" id="app">
+  <div class="loading">加载中...</div>
+</main>
+
+<div class="modal-overlay" id="modalOverlay" onclick="closeModal()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="modalTitle">详情</h3>
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

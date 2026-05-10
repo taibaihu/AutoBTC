@@ -18,6 +18,7 @@ from config import (
 from engine import FuturesEngine, OKXEngine
 from strategy import BUY, SELL, HOLD, STRATEGIES, calc_rsi_series, calc_macd, calc_kdj, calc_bollinger_bands, check_buy_conditions
 from risk_manager import RiskManager
+from db_manager import save_real_order
 from notifier import Notifier
 from strategy_manager import load_strategy, apply_to_config
 
@@ -91,6 +92,10 @@ def main(user_id: str = "default"):
 
     last_rsi_alert = 0.0
 
+    is_short_strategy = cfg.strategy_type in ("fast_range_short",)
+    if is_short_strategy:
+        logger.info("📉 做空模式: SELL=开空, BUY=平空")
+
     while True:
         try:
             # 1. 获取合约行情
@@ -112,12 +117,27 @@ def main(user_id: str = "default"):
             elif live_binance:
                 logger.info(f"🔥 合约价 B:{live_binance:.2f}  O现货:获取失败")
 
-            # 2. 持仓检查 —— 止盈/止损
+            # 2. 持仓检查 —— 止盈/止损（多空独立检查）
             if risk.position:
                 reason = risk.should_close(price)
                 if reason:
                     pnl = risk.calc_pnl(price)
                     risk.record_trade(pnl, exit_price=price)
+                    engine.cancel_all_orders()
+                    close_label = "多单止盈止损"
+                    logger.info(f"💰 {reason} | 当前价: {price:.4f} | 盈亏: {pnl:+.2f} ({LEVERAGE}x)")
+                    notifier.send(
+                        f"<b>{reason}</b>\n"
+                        f"交易对: {CONTRACT_SYMBOL}\n"
+                        f"价格: {price:.4f}\n"
+                        f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)"
+                    )
+
+            if risk.short_position:
+                reason = risk.should_close_short(price)
+                if reason:
+                    pnl = risk.calc_short_pnl(price)
+                    risk.close_short(pnl, exit_price=price)
                     engine.cancel_all_orders()
                     logger.info(f"💰 {reason} | 当前价: {price:.4f} | 盈亏: {pnl:+.2f} ({LEVERAGE}x)")
                     notifier.send(
@@ -133,7 +153,10 @@ def main(user_id: str = "default"):
             # 日志
             indicator_parts = []
             for k, v in indicators.items():
-                indicator_parts.append(f"{k}: {v:.4f}")
+                if isinstance(v, float):
+                    indicator_parts.append(f"{k}: {v:.4f}")
+                else:
+                    indicator_parts.append(f"{k}: {v}")
             logger.info(
                 f"📊 价格: {price:.4f} | "
                 f"{' | '.join(indicator_parts)} | "
@@ -141,38 +164,82 @@ def main(user_id: str = "default"):
             )
 
             # 4. 执行交易（模拟模式不下真实单，只算盈亏记库）
-            if signal == BUY and not risk.position:
-                ok, reason = risk.can_trade()
-                if ok:
-                    risk.open_position(price)
-                    label = "🟢 合约开多(模拟)" if strategy.paper_trading else "🟢 合约开多"
-                    pos_value = MAX_POSITION_USDT * LEVERAGE
-                    logger.info(f"{label} | {price:.4f} | 保证金:{MAX_POSITION_USDT}U | {LEVERAGE}x | 名义价值:{pos_value:.2f}U")
+            if is_short_strategy:
+                # ── 做空模式: SELL=开空, BUY=平空 ──
+                if signal == SELL and not risk.short_position:
+                    ok, reason = risk.can_trade()
+                    if ok:
+                        risk.open_short(price)
+                        label = "🔴 合约开空(模拟)" if strategy.paper_trading else "🔴 合约开空"
+                        pos_value = MAX_POSITION_USDT * LEVERAGE
+                        logger.info(f"{label} | {price:.4f} | 保证金:{MAX_POSITION_USDT}U | {LEVERAGE}x | 名义价值:{pos_value:.2f}U")
+                        notifier.send(
+                            f"<b>{label}</b>\n"
+                            f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
+                            f"保证金: {MAX_POSITION_USDT} USDT | {LEVERAGE}x\n"
+                            f"名义价值: {pos_value:.2f} USDT"
+                        )
+                        if not strategy.paper_trading:
+                            result = engine.market_sell_short(CONTRACT_SYMBOL, MAX_POSITION_USDT)
+                            save_real_order(result, CONTRACT_SYMBOL, "SELL", "SHORT",
+                                            strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                    else:
+                        logger.warning(f"⛔ 风控拦截: {reason}")
+
+                elif signal == BUY and risk.short_position:
+                    engine.cancel_all_orders()
+                    pnl = risk.calc_short_pnl(price)
+                    risk.close_short(pnl, exit_price=price)
+                    label = "🟢 合约平空(模拟)" if strategy.paper_trading else "🟢 合约平空"
+                    logger.info(f"{label} | {price:.4f} | 盈亏: {pnl:+.2f}")
                     notifier.send(
                         f"<b>{label}</b>\n"
                         f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
-                        f"保证金: {MAX_POSITION_USDT} USDT | {LEVERAGE}x\n"
-                        f"名义价值: {pos_value:.2f} USDT"
+                        f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)\n"
+                        f"统计: 今日{risk.trade_count}笔 / 盈亏{risk.daily_pnl:+.2f}"
                     )
                     if not strategy.paper_trading:
-                        engine.market_buy(CONTRACT_SYMBOL, MAX_POSITION_USDT)
-                else:
-                    logger.warning(f"⛔ 风控拦截: {reason}")
+                        result = engine.market_buy_cover(CONTRACT_SYMBOL, MAX_POSITION_USDT)
+                        save_real_order(result, CONTRACT_SYMBOL, "BUY", "SHORT",
+                                        strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
+            else:
+                # ── 做多模式: BUY=开多, SELL=平多 ──
+                if signal == BUY and not risk.position:
+                    ok, reason = risk.can_trade()
+                    if ok:
+                        risk.open_position(price)
+                        label = "🟢 合约开多(模拟)" if strategy.paper_trading else "🟢 合约开多"
+                        pos_value = MAX_POSITION_USDT * LEVERAGE
+                        logger.info(f"{label} | {price:.4f} | 保证金:{MAX_POSITION_USDT}U | {LEVERAGE}x | 名义价值:{pos_value:.2f}U")
+                        notifier.send(
+                            f"<b>{label}</b>\n"
+                            f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
+                            f"保证金: {MAX_POSITION_USDT} USDT | {LEVERAGE}x\n"
+                            f"名义价值: {pos_value:.2f} USDT"
+                        )
+                        if not strategy.paper_trading:
+                            result = engine.market_buy(CONTRACT_SYMBOL, MAX_POSITION_USDT)
+                            save_real_order(result, CONTRACT_SYMBOL, "BUY", "LONG",
+                                            strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                    else:
+                        logger.warning(f"⛔ 风控拦截: {reason}")
 
-            elif signal == SELL and risk.position:
-                engine.cancel_all_orders()
-                pnl = risk.calc_pnl(price)
-                risk.record_trade(pnl, exit_price=price)
-                label = "🔴 合约平多(模拟)" if strategy.paper_trading else "🔴 合约平多"
-                logger.info(f"{label} | {price:.4f} | 盈亏: {pnl:+.2f}")
-                notifier.send(
-                    f"<b>{label}</b>\n"
-                    f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
-                    f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)\n"
-                    f"统计: 今日{risk.trade_count}笔 / 盈亏{risk.daily_pnl:+.2f}"
-                )
-                if not strategy.paper_trading:
-                    engine.market_sell(CONTRACT_SYMBOL, MAX_POSITION_USDT)
+                elif signal == SELL and risk.position:
+                    engine.cancel_all_orders()
+                    pnl = risk.calc_pnl(price)
+                    risk.record_trade(pnl, exit_price=price)
+                    label = "🔴 合约平多(模拟)" if strategy.paper_trading else "🔴 合约平多"
+                    logger.info(f"{label} | {price:.4f} | 盈亏: {pnl:+.2f}")
+                    notifier.send(
+                        f"<b>{label}</b>\n"
+                        f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
+                        f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)\n"
+                        f"统计: 今日{risk.trade_count}笔 / 盈亏{risk.daily_pnl:+.2f}"
+                    )
+                    if not strategy.paper_trading:
+                        result = engine.market_sell(CONTRACT_SYMBOL, MAX_POSITION_USDT)
+                        save_real_order(result, CONTRACT_SYMBOL, "SELL", "LONG",
+                                        strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
 
             # ===== 多周期指标监控（合约数据，实时价参与）=====
             def _calc_indicators(exchange_obj, main_tf_df=None):
