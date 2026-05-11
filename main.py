@@ -24,12 +24,6 @@ from db_manager import save_real_order, save_sim_order, create_local_trade, clos
 from notifier import Notifier
 from strategy_manager import load_strategy, apply_to_config
 
-handler = TimedRotatingFileHandler("main.log", when="midnight", interval=1, backupCount=30, encoding="utf-8")
-handler.suffix = "%Y-%m-%d"
-handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-
-
-logging.basicConfig(level=logging.INFO, handlers=[handler])
 logger = logging.getLogger(__name__)
 
 SIGNAL_MAP = {BUY: "\U0001f7e2买入", SELL: "\U0001f534卖出", HOLD: "⚪观望"}
@@ -64,7 +58,24 @@ def check_rsi_alert(rsi_values: dict, last_alert: float, notifier: Notifier) -> 
     return now
 
 
+def setup_logging(user_id: str):
+    """配置用户独立的日志文件，避免多进程冲突"""
+    handler = TimedRotatingFileHandler(
+        f"main.{user_id}.log", when="midnight", interval=1,
+        backupCount=30, encoding="utf-8",
+    )
+    handler.suffix = "%Y-%m-%d"
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    for h in root.handlers[:]:
+        root.removeHandler(h)
+    root.addHandler(handler)
+
+
 def main(user_id: str = "default"):
+    setup_logging(user_id)
+
     # 从 DB 加载策略配置并覆盖 config 模块变量
     cfg = load_strategy(user_id)
     apply_to_config(cfg)
@@ -93,10 +104,15 @@ def main(user_id: str = "default"):
 
     last_rsi_alert = 0.0
     next_trade_time = time.time() + STARTUP_COOLDOWN
+    _tp_sl_check = 0
 
     is_short_strategy = cfg.strategy_type in ("fast_range_short",)
     if is_short_strategy:
         logger.info("📉 做空模式: SELL=开空, BUY=平空")
+
+    # 清除启动前的残留挂单（防止重复开仓），必须在设 TP/SL 之前执行
+    if not strategy.paper_trading:
+        engine.cancel_all_orders()
 
     # ── 启动时同步币安实际持仓 ──
     if is_short_strategy:
@@ -113,9 +129,6 @@ def main(user_id: str = "default"):
             logger.info(f"🔄 同步到现有多仓 | 数量:{existing['size']:.4f} BTC | 入场:{existing['entry_price']:.0f}")
             if not strategy.paper_trading:
                 engine.set_tp_sl_long(existing["entry_price"])
-    # 清除启动前的残留挂单（防止重复开仓）
-    if not strategy.paper_trading:
-        engine.cancel_all_orders()
 
     while True:
         try:
@@ -143,7 +156,16 @@ def main(user_id: str = "default"):
                 reason = risk.should_close(price)
                 entry = risk._entry_price
                 chg = (price - entry) / entry * 100
-                logger.info(f"📌 [{user_id}] 多仓 | 入场:{entry:.0f} 当前:{price:.0f} 涨跌:{chg:+.2f}% 止盈:{risk.min_profit_rate*100:.1f}% 止损:{risk.max_loss_rate*100:.1f}% {'🔔 '+reason if reason else '⏳ 持有中'}")
+                tp_price = entry * (1 + risk.min_profit_rate)
+                sl_price = entry * (1 - risk.max_loss_rate)
+                tp_dist = tp_price - price
+                sl_dist = price - sl_price
+                logger.info(
+                    f"📌 [{user_id}] 多仓 | "
+                    f"入场:{entry:.0f} 当前:{price:.0f} {chg:+.2f}% | "
+                    f"TP:{tp_price:.0f}(差{tp_dist:+.0f}) SL:{sl_price:.0f}(余{sl_dist:+.0f}) | "
+                    f"{'🔔 '+reason if reason else '⏳条件未触及'}"
+                )
                 if reason:
                     pnl = risk.calc_pnl(price)
                     risk.record_trade(pnl, exit_price=price)
@@ -164,6 +186,7 @@ def main(user_id: str = "default"):
                         active = get_latest_active_trade("LONG")
                         if active and bo_id:
                             close_local_trade(active["id"], bo_id, price, pnl)
+                        engine.cancel_all_orders()
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "SELL", "LONG", price,
                                        signal_type="tp_sl", strategy_name=strategy.__class__.__name__,
@@ -174,7 +197,16 @@ def main(user_id: str = "default"):
                 reason = risk.should_close_short(price)
                 entry = risk._short_entry_price
                 chg = (entry - price) / entry * 100
-                logger.info(f"📌 [{user_id}] 空仓 | 入场:{entry:.0f} 当前:{price:.0f} 涨跌:{chg:+.2f}% 止盈:{risk.min_profit_rate*100:.1f}% 止损:{risk.max_loss_rate*100:.1f}% {'🔔 '+reason if reason else '⏳ 持有中'}")
+                tp_price = entry * (1 - risk.min_profit_rate)
+                sl_price = entry * (1 + risk.max_loss_rate)
+                tp_dist = price - tp_price
+                sl_dist = sl_price - price
+                logger.info(
+                    f"📌 [{user_id}] 空仓 | "
+                    f"入场:{entry:.0f} 当前:{price:.0f} {chg:+.2f}% | "
+                    f"TP:{tp_price:.0f}(余{tp_dist:+.0f}) SL:{sl_price:.0f}(差{sl_dist:+.0f}) | "
+                    f"{'🔔 '+reason if reason else '⏳条件未触及'}"
+                )
                 if reason:
                     pnl = risk.calc_short_pnl(price)
                     risk.close_short(pnl, exit_price=price)
@@ -194,6 +226,7 @@ def main(user_id: str = "default"):
                         active = get_latest_active_trade("SHORT")
                         if active and bo_id:
                             close_local_trade(active["id"], bo_id, price, pnl)
+                        engine.cancel_all_orders()
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "BUY", "SHORT", price,
                                        signal_type="tp_sl", strategy_name=strategy.__class__.__name__,
@@ -202,6 +235,20 @@ def main(user_id: str = "default"):
 
             if not risk.position and not risk.short_position:
                 logger.info(f"📌 [{user_id}] 无持仓")
+                # 运行时重同步: risk 显示无持仓但币安有 → 恢复跟踪
+                existing = engine.get_position("SHORT" if is_short_strategy else "LONG")
+                if existing:
+                    if is_short_strategy:
+                        risk.open_short(existing["entry_price"])
+                        logger.info(f"🔄 运行时同步到空仓 | 入场:{existing['entry_price']:.0f}")
+                    else:
+                        risk.open_position(existing["entry_price"])
+                        logger.info(f"🔄 运行时同步到多仓 | 入场:{existing['entry_price']:.0f}")
+                    if not strategy.paper_trading:
+                        if is_short_strategy:
+                            engine.set_tp_sl_short(existing["entry_price"])
+                        else:
+                            engine.set_tp_sl_long(existing["entry_price"])
 
             # 3. 生成信号
             signal, indicators = strategy.generate_signal(df)
@@ -233,27 +280,43 @@ def main(user_id: str = "default"):
                             if existing_long > 0:
                                 logger.warning(f"⛔ 已有反向多单 {existing_long:.4f} BTC，不開空")
                             else:
-                                risk.open_short(price)
-                                label = "🔴 合约开空(模拟)" if strategy.paper_trading else "🔴 合约开空"
-                                pos_value = FIXED_ORDER_QTY * price
-                                logger.info(f"{label} | {price:.0f} | 数量:{FIXED_ORDER_QTY}BTC | {LEVERAGE}x | 价值:{pos_value:.2f}U")
-                                notifier.send(
-                                    f"<b>{label}</b>\n"
-                                    f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
-                                    f"数量: {FIXED_ORDER_QTY} BTC | {LEVERAGE}x\n"
-                                    f"价值: {pos_value:.2f} USDT"
-                                )
                                 if not strategy.paper_trading:
+                                    # 实盘: 先下单，成交后才更新持仓状态
                                     result = engine.limit_sell_short_open()
-                                    save_real_order(result, CONTRACT_SYMBOL, "SELL", "SHORT",
-                                                    strategy.__class__.__name__, LEVERAGE, paper_trading=0)
-                                    bo_id = result.get("info", result).get("orderId") or result.get("id")
-                                    if bo_id:
-                                        create_local_trade(CONTRACT_SYMBOL, "SHORT", bo_id,
-                                                           price, FIXED_ORDER_QTY, LEVERAGE,
-                                                           strategy.__class__.__name__)
-                                    engine.set_tp_sl_short(price)
+                                    filled = float(result.get("filled", 0) or 0)
+                                    if filled <= 0:
+                                        logger.warning(f"⛔ 开空未成交，不更新持仓")
+                                    else:
+                                        risk.open_short(price)
+                                        label = "🔴 合约开空"
+                                        pos_value = FIXED_ORDER_QTY * price
+                                        logger.info(f"{label} | {price:.0f} | 数量:{FIXED_ORDER_QTY}BTC | {LEVERAGE}x | 价值:{pos_value:.2f}U")
+                                        notifier.send(
+                                            f"<b>{label}</b>\n"
+                                            f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
+                                            f"数量: {FIXED_ORDER_QTY} BTC | {LEVERAGE}x\n"
+                                            f"价值: {pos_value:.2f} USDT"
+                                        )
+                                        save_real_order(result, CONTRACT_SYMBOL, "SELL", "SHORT",
+                                                        strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                                        bo_id = result.get("info", result).get("orderId") or result.get("id")
+                                        if bo_id:
+                                            create_local_trade(CONTRACT_SYMBOL, "SHORT", bo_id,
+                                                               price, FIXED_ORDER_QTY, LEVERAGE,
+                                                               strategy.__class__.__name__)
+                                        engine.set_tp_sl_short(price)
                                 else:
+                                    # 模拟: 直接更新状态
+                                    risk.open_short(price)
+                                    label = "🔴 合约开空(模拟)"
+                                    pos_value = FIXED_ORDER_QTY * price
+                                    logger.info(f"{label} | {price:.0f} | 数量:{FIXED_ORDER_QTY}BTC | {LEVERAGE}x | 价值:{pos_value:.2f}U")
+                                    notifier.send(
+                                        f"<b>{label}</b>\n"
+                                        f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
+                                        f"数量: {FIXED_ORDER_QTY} BTC | {LEVERAGE}x\n"
+                                        f"价值: {pos_value:.2f} USDT"
+                                    )
                                     save_sim_order(CONTRACT_SYMBOL, "SELL", "SHORT", price,
                                                    signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
                                                msg=f"开空 @ {price}")
@@ -281,6 +344,7 @@ def main(user_id: str = "default"):
                         active = get_latest_active_trade("SHORT")
                         if active and bo_id:
                             close_local_trade(active["id"], bo_id, price, pnl)
+                        engine.cancel_all_orders()
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "BUY", "SHORT", price,
                                        signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
@@ -298,27 +362,43 @@ def main(user_id: str = "default"):
                             if existing_short > 0:
                                 logger.warning(f"⛔ 已有反向空单 {existing_short:.4f} BTC，不开多")
                             else:
-                                risk.open_position(price)
-                                label = "🟢 合约开多(模拟)" if strategy.paper_trading else "🟢 合约开多"
-                                pos_value = FIXED_ORDER_QTY * price
-                                logger.info(f"{label} | {price:.0f} | 数量:{FIXED_ORDER_QTY}BTC | {LEVERAGE}x | 价值:{pos_value:.2f}U")
-                                notifier.send(
-                                    f"<b>{label}</b>\n"
-                                    f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
-                                    f"数量: {FIXED_ORDER_QTY} BTC | {LEVERAGE}x\n"
-                                    f"价值: {pos_value:.2f} USDT"
-                                )
                                 if not strategy.paper_trading:
+                                    # 实盘: 先下单，成交后才更新持仓状态
                                     result = engine.limit_buy_open()
-                                    save_real_order(result, CONTRACT_SYMBOL, "BUY", "LONG",
-                                                    strategy.__class__.__name__, LEVERAGE, paper_trading=0)
-                                    bo_id = result.get("info", result).get("orderId") or result.get("id")
-                                    if bo_id:
-                                        create_local_trade(CONTRACT_SYMBOL, "LONG", bo_id,
-                                                           price, FIXED_ORDER_QTY, LEVERAGE,
-                                                           strategy.__class__.__name__)
-                                    engine.set_tp_sl_long(price)
+                                    filled = float(result.get("filled", 0) or 0)
+                                    if filled <= 0:
+                                        logger.warning(f"⛔ 开多未成交，不更新持仓")
+                                    else:
+                                        risk.open_position(price)
+                                        label = "🟢 合约开多"
+                                        pos_value = FIXED_ORDER_QTY * price
+                                        logger.info(f"{label} | {price:.0f} | 数量:{FIXED_ORDER_QTY}BTC | {LEVERAGE}x | 价值:{pos_value:.2f}U")
+                                        notifier.send(
+                                            f"<b>{label}</b>\n"
+                                            f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
+                                            f"数量: {FIXED_ORDER_QTY} BTC | {LEVERAGE}x\n"
+                                            f"价值: {pos_value:.2f} USDT"
+                                        )
+                                        save_real_order(result, CONTRACT_SYMBOL, "BUY", "LONG",
+                                                        strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                                        bo_id = result.get("info", result).get("orderId") or result.get("id")
+                                        if bo_id:
+                                            create_local_trade(CONTRACT_SYMBOL, "LONG", bo_id,
+                                                               price, FIXED_ORDER_QTY, LEVERAGE,
+                                                               strategy.__class__.__name__)
+                                        engine.set_tp_sl_long(price)
                                 else:
+                                    # 模拟: 直接更新状态
+                                    risk.open_position(price)
+                                    label = "🟢 合约开多(模拟)"
+                                    pos_value = FIXED_ORDER_QTY * price
+                                    logger.info(f"{label} | {price:.0f} | 数量:{FIXED_ORDER_QTY}BTC | {LEVERAGE}x | 价值:{pos_value:.2f}U")
+                                    notifier.send(
+                                        f"<b>{label}</b>\n"
+                                        f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
+                                        f"数量: {FIXED_ORDER_QTY} BTC | {LEVERAGE}x\n"
+                                        f"价值: {pos_value:.2f} USDT"
+                                    )
                                     save_sim_order(CONTRACT_SYMBOL, "BUY", "LONG", price,
                                                signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
                                                msg=f"开多 @ {price}")
@@ -346,6 +426,7 @@ def main(user_id: str = "default"):
                         active = get_latest_active_trade("LONG")
                         if active and bo_id:
                             close_local_trade(active["id"], bo_id, price, pnl)
+                        engine.cancel_all_orders()
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "SELL", "LONG", price,
                                        signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
@@ -420,6 +501,31 @@ def main(user_id: str = "default"):
             if risk.trade_count > 0:
                 s = risk.summary
                 logger.info(f"状态: {s}")
+
+            # 7. TP/SL 挂单健康检查 — 每 12 轮 (~1分钟) 检查一次，丢失则重新挂载
+            if not strategy.paper_trading and (risk.position or risk.short_position):
+                _tp_sl_check += 1
+                if _tp_sl_check >= 12:
+                    _tp_sl_check = 0
+                    open_orders = engine.exchange.fetch_open_orders(engine._symbol)
+                    entry_price = risk._entry_price if risk.position else risk._short_entry_price
+                    pos_side = "LONG" if risk.position else "SHORT"
+                    has_tp = any(
+                        o.get("info", {}).get("positionSide") == pos_side
+                        and o.get("type") in ("TAKE_PROFIT_MARKET",)
+                        for o in open_orders
+                    )
+                    has_sl = any(
+                        o.get("info", {}).get("positionSide") == pos_side
+                        and o.get("type") in ("STOP_MARKET",)
+                        for o in open_orders
+                    )
+                    if not has_tp or not has_sl:
+                        logger.info(f"🔄 {pos_side} TP/SL 挂单丢失，重新挂载")
+                        if risk.position:
+                            engine.set_tp_sl_long(entry_price)
+                        else:
+                            engine.set_tp_sl_short(entry_price)
 
             time.sleep(5)
 

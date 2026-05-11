@@ -156,15 +156,23 @@ class FuturesEngine:
             return None
 
     def cancel_all_orders(self):
-        """撤销当前交易对所有挂单（止盈止损单）"""
+        """撤销当前交易对所有挂单（每条单独处理，一个失败不影响其余的）"""
+        orders = []
         try:
             orders = self.exchange.fetch_open_orders(self._symbol)
-            for o in orders:
-                self.exchange.cancel_order(o["id"], self._symbol)
-            if orders:
-                logger.info(f"已撤销 {len(orders)} 个挂单")
         except Exception as e:
-            logger.warning(f"撤销挂单异常: {e}")
+            logger.warning(f"查询挂单异常: {e}")
+            return
+        if not orders:
+            return
+        success = 0
+        for o in orders:
+            try:
+                self.exchange.cancel_order(o["id"], self._symbol)
+                success += 1
+            except Exception as e:
+                logger.warning(f"撤销挂单 {o['id']} 失败: {e}")
+        logger.info(f"已撤销 {success}/{len(orders)} 个挂单")
 
     def calc_contract_amount(self, usdt_amount: float, price: float) -> float:
         """计算合约数量 = (USDT金额 × 杠杆) / 当前价"""
@@ -254,12 +262,26 @@ class FuturesEngine:
     # ── TP/SL 挂单 ──────────────────────────────────────
 
     def _get_precise_qty(self) -> float:
-        """将 order_qty 按交易所精度格式化"""
-        return float(self.exchange.amount_to_precision(self._symbol, self.order_qty))
+        """将 order_qty 按交易所精度格式化，失败则取原始值"""
+        try:
+            result = self.exchange.amount_to_precision(self._symbol, self.order_qty)
+            if result is None:
+                self.exchange.load_markets()
+                result = self.exchange.amount_to_precision(self._symbol, self.order_qty)
+            return float(result) if result is not None else self.order_qty
+        except Exception:
+            return self.order_qty
 
     def _get_precise_price(self, price: float) -> float:
-        """将价格按交易所精度格式化"""
-        return float(self.exchange.price_to_precision(self._symbol, price))
+        """将价格按交易所精度格式化，失败则取原始值"""
+        try:
+            result = self.exchange.price_to_precision(self._symbol, price)
+            if result is None:
+                self.exchange.load_markets()
+                result = self.exchange.price_to_precision(self._symbol, price)
+            return float(result) if result is not None else price
+        except Exception:
+            return price
 
     def set_tp_sl_long(self, entry_price: float):
         """开多后挂止盈止损单 (币安侧)"""
@@ -271,7 +293,7 @@ class FuturesEngine:
         try:
             self.exchange.create_order(
                 self._symbol, "TAKE_PROFIT_MARKET", "sell", qty, None,
-                {"stopPrice": tp_price, "positionSide": "LONG"},
+                {"stopPrice": tp_price, "positionSide": "LONG", "reduceOnly": True},
             )
             logger.info(f"✅ 多单止盈挂单 {tp_price}")
         except Exception as e:
@@ -279,7 +301,7 @@ class FuturesEngine:
         try:
             self.exchange.create_order(
                 self._symbol, "STOP_MARKET", "sell", qty, None,
-                {"stopPrice": sl_price, "positionSide": "LONG"},
+                {"stopPrice": sl_price, "positionSide": "LONG", "reduceOnly": True},
             )
             logger.info(f"✅ 多单止损挂单 {sl_price}")
         except Exception as e:
@@ -295,7 +317,7 @@ class FuturesEngine:
         try:
             self.exchange.create_order(
                 self._symbol, "TAKE_PROFIT_MARKET", "buy", qty, None,
-                {"stopPrice": tp_price, "positionSide": "SHORT"},
+                {"stopPrice": tp_price, "positionSide": "SHORT", "reduceOnly": True},
             )
             logger.info(f"✅ 空单止盈挂单 {tp_price}")
         except Exception as e:
@@ -303,7 +325,7 @@ class FuturesEngine:
         try:
             self.exchange.create_order(
                 self._symbol, "STOP_MARKET", "buy", qty, None,
-                {"stopPrice": sl_price, "positionSide": "SHORT"},
+                {"stopPrice": sl_price, "positionSide": "SHORT", "reduceOnly": True},
             )
             logger.info(f"✅ 空单止损挂单 {sl_price}")
         except Exception as e:

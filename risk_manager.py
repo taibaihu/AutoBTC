@@ -142,10 +142,6 @@ class RiskManager:
         return self._position
 
     @property
-    def position(self) -> bool:
-        return self._position
-
-    @property
     def short_position(self) -> bool:
         return self._short_position
 
