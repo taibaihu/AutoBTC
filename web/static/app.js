@@ -18,14 +18,14 @@ function fmtTime(t) {
   if (!t) return '-';
   const d = new Date(t);
   const pad = n => String(n).padStart(2, '0');
-  return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
 }
 
 function fmtFullTime(t) {
   if (!t) return '-';
   const d = new Date(t);
   const pad = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
 }
 
 function pnlClass(v) {
@@ -75,13 +75,16 @@ async function renderDashboard() {
   app.innerHTML = '<div class="loading">加载中...</div>';
 
   try {
-    const [d, market, account] = await Promise.all([
+    const [d, market, account, lt] = await Promise.all([
       api('/api/dashboard'),
       api('/api/market'),
       api('/api/account'),
+      api('/api/local-trades?limit=20'),
     ]);
     const o = d.orders;
     const s = d.strategies;
+    const ltData = lt.trades || [];
+    const ltStats = lt.stats || {};
 
     const a = o.all_time || {};
     const t = o.today || {};
@@ -146,43 +149,24 @@ async function renderDashboard() {
 
       <div class="row" style="margin-top:16px">
         <div class="col-4"><div class="stat-card">
-          <div class="label">总交易次数</div>
-          <div class="value">${a.total_trades || 0}</div>
-          <div class="sub">今日 ${t.total_trades || 0} 笔</div>
+          <div class="label">总交易</div>
+          <div class="value">${ltStats.total_trades || 0}</div>
+          <div class="sub">持仓中 ${ltStats.open_trades || 0} 笔</div>
         </div></div>
         <div class="col-4"><div class="stat-card">
           <div class="label">总盈亏 (USDT)</div>
-          <div class="value ${pnlClass(a.total_pnl)}">${pnlStr(a.total_pnl)}</div>
-          <div class="sub">今日 ${pnlStr(t.total_pnl)}</div>
+          <div class="value ${pnlClass(ltStats.total_pnl)}">${pnlStr(ltStats.total_pnl)}</div>
+          <div class="sub">已平仓 ${ltStats.closed_trades || 0} 笔</div>
         </div></div>
         <div class="col-4"><div class="stat-card">
           <div class="label">胜率</div>
-          <div class="value blue">${a.win_rate || 0}%</div>
-          <div class="sub">${a.wins || 0}胜 / ${a.losses || 0}负</div>
+          <div class="value blue">${ltStats.win_rate || 0}%</div>
+          <div class="sub">${ltStats.wins || 0}胜 / ${ltStats.losses || 0}负</div>
         </div></div>
         <div class="col-4"><div class="stat-card">
           <div class="label">活跃策略</div>
           <div class="value">${s.total_enabled || 0}</div>
-          <div class="sub">总成交额 ${(a.total_volume || 0).toFixed(2)} USDT</div>
-        </div></div>
-      </div>
-
-      <div class="row" style="margin-top:8px">
-        <div class="col-4"><div class="stat-card">
-          <div class="label">最大单笔盈利</div>
-          <div class="value green">${pnlStr(a.max_win)}</div>
-        </div></div>
-        <div class="col-4"><div class="stat-card">
-          <div class="label">最大单笔亏损</div>
-          <div class="value red">${pnlStr(a.max_loss)}</div>
-        </div></div>
-        <div class="col-4"><div class="stat-card">
-          <div class="label">平均盈亏</div>
-          <div class="value ${pnlClass(a.avg_pnl)}">${pnlStr(a.avg_pnl)}</div>
-        </div></div>
-        <div class="col-4"><div class="stat-card">
-          <div class="label">运行时间</div>
-          <div class="value" style="font-size:1rem">${d.time ? fmtFullTime(d.time) : '-'}</div>
+          <div class="sub">运行中</div>
         </div></div>
       </div>
 
@@ -192,8 +176,8 @@ async function renderDashboard() {
       </div>
 
       <div class="section">
-        <div class="section-title">📄 近期订单 <span class="count">(${(o.recent || []).length})</span></div>
-        <div class="table-wrap">${renderOrderTable(o.recent || [])}</div>
+        <div class="section-title">📄 本地订单 <span class="count">(${ltData.length})</span></div>
+        <div class="table-wrap">${renderLocalTradeTable(ltData)}</div>
       </div>
     `;
   } catch (e) {
@@ -682,10 +666,125 @@ function navigate(path) {
   route();
 }
 
+function renderLocalOrders() {
+  setActiveNav('local-orders');
+  const app = qs('#app');
+  app.innerHTML = '<div class="loading">加载中...</div>';
+
+  try {
+    (async () => {
+      const params = new URLSearchParams(window.location.search);
+      const limit = params.get('limit') || 100;
+      const status = params.get('status') || '';
+      const direction = params.get('direction') || '';
+
+      let path = `/api/local-trades?limit=${limit}`;
+      if (status) path += `&status=${status}`;
+      if (direction) path += `&direction=${direction}`;
+
+      const data = await api(path);
+      const trades = data.trades || [];
+      const stats = data.stats || {};
+
+      app.innerHTML = `
+        <div class="row">
+          <div class="col-4"><div class="stat-card">
+            <div class="label">总交易</div>
+            <div class="value">${stats.total_trades || 0}</div>
+          </div></div>
+          <div class="col-4"><div class="stat-card">
+            <div class="label">持仓中</div>
+            <div class="value" style="color:#58a6ff">${stats.open_trades || 0}</div>
+          </div></div>
+          <div class="col-4"><div class="stat-card">
+            <div class="label">总盈亏</div>
+            <div class="value ${pnlClass(stats.total_pnl)}">${pnlStr(stats.total_pnl)}</div>
+          </div></div>
+          <div class="col-4"><div class="stat-card">
+            <div class="label">胜率</div>
+            <div class="value blue">${stats.win_rate || 0}%</div>
+            <div class="sub">${stats.wins || 0}胜 / ${stats.losses || 0}负</div>
+          </div></div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">
+            📄 本地订单（开平一条记录）
+            <span class="count">(${trades.length})</span>
+          </div>
+          <div class="filters">
+            <select id="filterStatus" onchange="applyLocalFilter()">
+              <option value="">全部状态</option>
+              <option value="持仓中" ${status==='持仓中'?'selected':''}>持仓中</option>
+              <option value="已平仓" ${status==='已平仓'?'selected':''}>已平仓</option>
+              <option value="部分平仓" ${status==='部分平仓'?'selected':''}>部分平仓</option>
+            </select>
+            <select id="filterDirection" onchange="applyLocalFilter()">
+              <option value="">全部方向</option>
+              <option value="LONG" ${direction==='LONG'?'selected':''}>LONG</option>
+              <option value="SHORT" ${direction==='SHORT'?'selected':''}>SHORT</option>
+            </select>
+            <span style="color:#8b949e;font-size:.85rem;align-self:center">最近 ${limit} 条</span>
+          </div>
+          <div class="table-wrap">${renderLocalTradeTable(trades)}</div>
+        </div>
+      `;
+    })();
+  } catch (e) {
+    app.innerHTML = `<div class="empty">加载失败: ${e.message}</div>`;
+  }
+}
+
+function renderLocalTradeTable(trades) {
+  if (!trades || !trades.length) return '<div class="empty">暂无记录</div>';
+  let html = `<table>
+    <thead><tr>
+      <th>#</th><th>方向</th><th>开仓时间</th><th>开仓价</th>
+      <th>平仓时间</th><th>平仓价</th><th>数量</th><th>已实现</th><th>浮盈</th><th>状态</th><th>策略</th>
+    </tr></thead><tbody>`;
+  for (const t of trades) {
+    const statusBadge = t.status === '持仓中'
+      ? '<span class="badge badge-blue">持仓中</span>'
+      : t.status === '已平仓'
+        ? '<span class="badge badge-gray">已平仓</span>'
+        : '<span class="badge badge-yellow">部分平仓</span>';
+    const isOpen = t.status === '持仓中';
+    const upnl = t.unrealized_pnl;
+    html += `<tr>
+      <td>${t.id}</td>
+      <td>${renderSide(t.direction)}</td>
+      <td>${fmtTime(t.open_time)}</td>
+      <td>${t.open_price ? Number(t.open_price).toFixed(1) : '-'}</td>
+      <td>${t.close_time ? fmtTime(t.close_time) : '-'}</td>
+      <td>${t.close_price ? Number(t.close_price).toFixed(1) : '-'}</td>
+      <td>${t.quantity ? Number(t.quantity).toFixed(4) : '-'}</td>
+      <td class="${pnlClass(t.pnl)}">${t.pnl !== null ? pnlStr(t.pnl) : '-'}</td>
+      <td class="${isOpen && upnl !== undefined ? pnlClass(upnl) : 'pnl-zero'}">${isOpen && upnl !== undefined ? pnlStr(upnl) : '-'}</td>
+      <td>${statusBadge}</td>
+      <td>${t.strategy_name || '-'}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  return html;
+}
+
+function applyLocalFilter() {
+  const status = qs('#filterStatus').value;
+  const direction = qs('#filterDirection').value;
+  const params = new URLSearchParams();
+  if (status) params.set('status', status);
+  if (direction) params.set('direction', direction);
+  const q = params.toString();
+  const url = '/local-orders' + (q ? '?' + q : '');
+  history.pushState({}, '', url);
+  renderLocalOrders();
+}
+
 function route() {
   const path = window.location.pathname;
   if (path === '/' || path === '') renderDashboard();
   else if (path === '/orders') renderOrders();
+  else if (path === '/local-orders') renderLocalOrders();
   else if (path === '/strategies') renderStrategies();
   else if (path === '/sim-orders') renderSimOrders();
   else if (/^\/strategy\/(\d+)$/.test(path)) {

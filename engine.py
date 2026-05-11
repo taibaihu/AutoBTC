@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """行情获取 & 订单执行模块"""
 import logging
+import time
 from typing import Optional
 
 import ccxt
@@ -130,7 +131,7 @@ class FuturesEngine:
         try:
             positions = self.exchange.fetch_positions([symbol])
             for p in positions:
-                if p.get("positionSide") == side:
+                if p.get("info", {}).get("positionSide") == side:
                     return float(p.get("contracts", 0) or 0)
             return 0.0
         except Exception:
@@ -142,7 +143,7 @@ class FuturesEngine:
             positions = self.exchange.fetch_positions([self._symbol])
             for p in positions:
                 size = float(p.get("contracts", 0) or 0)
-                p_side = p.get("positionSide", "")
+                p_side = p.get("info", {}).get("positionSide", "")
                 if size > 0 and p_side == side:
                     return {
                         "size": size,
@@ -178,6 +179,28 @@ class FuturesEngine:
         qty = float(self.exchange.amount_to_precision(self._symbol, self.order_qty))
         return self.exchange.create_market_buy_order(self._symbol, qty, {"positionSide": "LONG"})
 
+    def limit_buy_open(self) -> dict:
+        """挂单开多 — post-only limit at best bid, 2s未成交回退市价"""
+        ticker = self.exchange.fetch_ticker(self._symbol)
+        bid = float(ticker["bid"])
+        qty = self._get_precise_qty()
+        try:
+            order = self.exchange.create_order(
+                self._symbol, "LIMIT", "buy", qty, bid,
+                {"positionSide": "LONG", "postOnly": True},
+            )
+            time.sleep(2)
+            fetched = self.exchange.fetch_order(order["id"], self._symbol)
+            filled = float(fetched.get("filled", 0) or 0)
+            if filled >= qty * 0.999:
+                logger.info(f"✅ 挂单开多 maker 成交 @ {bid}")
+                return fetched
+            logger.info(f"⏳ 挂单开多未成交(已填{filled:.4f}/{qty})，撤单回退市价")
+            self.exchange.cancel_order(order["id"], self._symbol)
+        except Exception as e:
+            logger.warning(f"挂单开多异常: {e}")
+        return self.market_buy(self._symbol, 0)
+
     def market_sell(self, symbol: str, amount: float) -> dict:
         """市价平多 — 按实际持仓数量平仓，确保全部平掉"""
         qty = self.get_position_size(symbol, "LONG")
@@ -195,6 +218,28 @@ class FuturesEngine:
         market = self.exchange.market(self._symbol)
         qty = float(self.exchange.amount_to_precision(self._symbol, self.order_qty))
         return self.exchange.create_market_sell_order(self._symbol, qty, {"positionSide": "SHORT"})
+
+    def limit_sell_short_open(self) -> dict:
+        """挂单开空 — post-only limit at best ask, 2s未成交回退市价"""
+        ticker = self.exchange.fetch_ticker(self._symbol)
+        ask = float(ticker["ask"])
+        qty = self._get_precise_qty()
+        try:
+            order = self.exchange.create_order(
+                self._symbol, "LIMIT", "sell", qty, ask,
+                {"positionSide": "SHORT", "postOnly": True},
+            )
+            time.sleep(2)
+            fetched = self.exchange.fetch_order(order["id"], self._symbol)
+            filled = float(fetched.get("filled", 0) or 0)
+            if filled >= qty * 0.999:
+                logger.info(f"✅ 挂单开空 maker 成交 @ {ask}")
+                return fetched
+            logger.info(f"⏳ 挂单开空未成交(已填{filled:.4f}/{qty})，撤单回退市价")
+            self.exchange.cancel_order(order["id"], self._symbol)
+        except Exception as e:
+            logger.warning(f"挂单开空异常: {e}")
+        return self.market_sell_short(self._symbol, 0)
 
     def market_buy_cover(self, symbol: str, amount: float) -> dict:
         """市价平空 — 按实际持仓数量平仓"""

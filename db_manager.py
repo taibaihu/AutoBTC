@@ -201,7 +201,189 @@ def init_database():
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='模拟交易记录表'
     """)
 
+    # local_trades 表（本地订单号，开平仓一条记录）
+    execute("""
+        CREATE TABLE IF NOT EXISTS local_trades (
+            id              INT AUTO_INCREMENT PRIMARY KEY COMMENT '本地订单号',
+            symbol          VARCHAR(20) NOT NULL COMMENT '交易对',
+            direction       VARCHAR(10) NOT NULL COMMENT 'LONG/SHORT',
+            open_order_id   BIGINT COMMENT '币安开仓订单号',
+            close_order_id  BIGINT COMMENT '币安平仓订单号',
+            open_time       DATETIME COMMENT '开仓时间',
+            close_time      DATETIME COMMENT '平仓时间',
+            open_price      DECIMAL(20, 8) COMMENT '开仓价',
+            close_price     DECIMAL(20, 8) COMMENT '平仓价',
+            quantity        DECIMAL(20, 8) COMMENT '数量',
+            leverage        INT DEFAULT 100 COMMENT '杠杆',
+            pnl             DECIMAL(20, 8) COMMENT '盈亏',
+            status          VARCHAR(20) DEFAULT '持仓中' COMMENT '持仓中/已平仓/部分平仓',
+            strategy_name   VARCHAR(50) DEFAULT '' COMMENT '策略名称',
+            paper_trading   TINYINT DEFAULT 0 COMMENT '0=实盘 1=模拟',
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_status (status),
+            INDEX idx_direction (direction),
+            INDEX idx_created (created_at DESC)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='本地订单表（开平一条记录）'
+    """)
+
     logger.info("所有数据库表已就绪")
+
+    # 回填历史订单
+    backfill_local_trades()
+
+
+def create_local_trade(symbol: str, direction: str, open_order_id: int,
+                       open_price: float, quantity: float, leverage: int,
+                       strategy_name: str, paper_trading: int = 0) -> Optional[int]:
+    """开仓：创建一条本地订单记录，状态=持仓中"""
+    cur = execute(
+        """INSERT INTO local_trades
+           (symbol, direction, open_order_id, open_time, open_price,
+            quantity, leverage, strategy_name, paper_trading, status)
+           VALUES (%s, %s, %s, NOW(), %s, %s, %s, %s, %s, '持仓中')""",
+        (symbol, direction, open_order_id, open_price,
+         quantity, leverage, strategy_name, paper_trading),
+        db=DB_NAME,
+    )
+    if cur and cur.lastrowid:
+        return cur.lastrowid
+    return None
+
+
+def close_local_trade(trade_id: int, close_order_id: int,
+                      close_price: float, pnl: float, status: str = '已平仓'):
+    """平仓：更新本地订单记录，填入平仓信息"""
+    execute(
+        """UPDATE local_trades SET
+           close_order_id = %s, close_time = NOW(), close_price = %s,
+           pnl = %s, status = %s
+           WHERE id = %s""",
+        (close_order_id, close_price, pnl, status, trade_id),
+        db=DB_NAME,
+    )
+
+
+def get_latest_active_trade(direction: str) -> Optional[dict]:
+    """查询某个方向最新一笔持仓中的订单"""
+    return fetch_one(
+        "SELECT * FROM local_trades WHERE direction = %s AND status = '持仓中' ORDER BY id DESC LIMIT 1",
+        (direction,), db=DB_NAME,
+    )
+
+
+def get_local_trades(limit: int = 50, offset: int = 0,
+                     status: Optional[str] = None,
+                     direction: Optional[str] = None) -> list[dict]:
+    """查询本地订单列表"""
+    conditions = []
+    params = []
+    if status:
+        conditions.append("status = %s")
+        params.append(status)
+    if direction:
+        conditions.append("direction = %s")
+        params.append(direction)
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    sql = f"SELECT * FROM local_trades {where} ORDER BY id DESC LIMIT %s OFFSET %s"
+    params.extend([limit, offset])
+    return fetch_all(sql, tuple(params), db=DB_NAME)
+
+
+def get_local_trade_stats() -> dict:
+    """本地订单统计"""
+    row = fetch_one("""
+        SELECT
+            COUNT(*)                                         AS total_trades,
+            COUNT(CASE WHEN status = '持仓中' THEN 1 END)    AS open_trades,
+            COUNT(CASE WHEN status = '已平仓' THEN 1 END)    AS closed_trades,
+            COUNT(CASE WHEN pnl > 0 THEN 1 END)              AS wins,
+            COUNT(CASE WHEN pnl < 0 THEN 1 END)              AS losses,
+            COALESCE(SUM(pnl), 0)                            AS total_pnl
+        FROM local_trades
+    """, db=DB_NAME)
+    if not row:
+        return {"total_trades": 0, "open_trades": 0, "closed_trades": 0}
+    total = row["total_trades"] or 0
+    wins = row["wins"] or 0
+    closed = row["closed_trades"] or 0
+    return {
+        "total_trades": total,
+        "open_trades": row["open_trades"] or 0,
+        "closed_trades": closed,
+        "wins": wins,
+        "losses": row["losses"] or 0,
+        "win_rate": round(wins / closed * 100, 1) if closed > 0 else 0,
+        "total_pnl": round(float(row["total_pnl"]), 2),
+    }
+
+
+def backfill_local_trades():
+    """从 real_orders 回填历史数据到 local_trades（幂等）"""
+    existing = fetch_one("SELECT COUNT(*) AS cnt FROM local_trades", db=DB_NAME)
+    if existing and existing["cnt"] > 0:
+        logger.info("local_trades 已有数据，跳过回填")
+        return
+
+    orders = fetch_all(
+        "SELECT * FROM real_orders WHERE status = 'FILLED' ORDER BY created_at ASC",
+        db=DB_NAME,
+    )
+    if not orders:
+        return
+
+    # 按方向配对开平：开=单，平=按时间先后配对
+    # LONG: 开=BUY/LONG, 平=SELL/LONG
+    # SHORT: 开=SELL/SHORT, 平=BUY/SHORT
+    opens = []
+    closes = {"LONG": [], "SHORT": []}
+    for o in orders:
+        side = o["side"]
+        pos_side = o["position_side"]
+        if side == "BUY" and pos_side == "LONG":
+            opens.append(o)
+        elif side == "SELL" and pos_side == "SHORT":
+            opens.append(o)
+        elif side == "SELL" and pos_side == "LONG":
+            closes["LONG"].append(o)
+        elif side == "BUY" and pos_side == "SHORT":
+            closes["SHORT"].append(o)
+
+    # 为每个开仓单找平仓单（按时间顺序最先出现的同方向平仓单）
+    used_closes = {"LONG": set(), "SHORT": set()}
+    inserted = 0
+    for o in opens:
+        direction = o["position_side"]
+        close = None
+        for c in closes.get(direction, []):
+            if c["id"] not in used_closes[direction] and c["created_at"] > o["created_at"]:
+                close = c
+                used_closes[direction].add(c["id"])
+                break
+
+        pnl = float(close["pnl"]) if close and close["pnl"] is not None else None
+        status = "已平仓" if close else "持仓中"
+
+        execute(
+            """INSERT INTO local_trades
+               (symbol, direction, open_order_id, close_order_id,
+                open_time, close_time, open_price, close_price,
+                quantity, leverage, pnl, status, strategy_name, paper_trading)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (
+                o["symbol"], direction, o["binance_order_id"],
+                close["binance_order_id"] if close else None,
+                o["created_at"], close["created_at"] if close else None,
+                float(o["avg_price"] or o["price"] or 0),
+                float(close["avg_price"] or close["price"] or 0) if close else None,
+                float(o["executed_qty"] or o["orig_qty"] or 0),
+                o["leverage"] or 100, pnl, status,
+                o["strategy_name"], o["paper_trading"],
+            ), db=DB_NAME,
+        )
+        inserted += 1
+
+    logger.info(f"回填完成: {inserted} 条本地订单")
 
 
 def save_sim_order(symbol: str, side: str, position_side: str, price: float,

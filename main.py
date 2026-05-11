@@ -20,7 +20,7 @@ from config import (
 from engine import FuturesEngine, OKXEngine
 from strategy import BUY, SELL, HOLD, STRATEGIES, calc_rsi_series, calc_macd, calc_kdj, calc_bollinger_bands
 from risk_manager import RiskManager
-from db_manager import save_real_order, save_sim_order
+from db_manager import save_real_order, save_sim_order, create_local_trade, close_local_trade, get_latest_active_trade
 from notifier import Notifier
 from strategy_manager import load_strategy, apply_to_config
 
@@ -28,10 +28,8 @@ handler = TimedRotatingFileHandler("main.log", when="midnight", interval=1, back
 handler.suffix = "%Y-%m-%d"
 handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 
-console = logging.StreamHandler()
-console.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 
-logging.basicConfig(level=logging.INFO, handlers=[handler, console])
+logging.basicConfig(level=logging.INFO, handlers=[handler])
 logger = logging.getLogger(__name__)
 
 SIGNAL_MAP = {BUY: "\U0001f7e2买入", SELL: "\U0001f534卖出", HOLD: "⚪观望"}
@@ -115,6 +113,9 @@ def main(user_id: str = "default"):
             logger.info(f"🔄 同步到现有多仓 | 数量:{existing['size']:.4f} BTC | 入场:{existing['entry_price']:.0f}")
             if not strategy.paper_trading:
                 engine.set_tp_sl_long(existing["entry_price"])
+    # 清除启动前的残留挂单（防止重复开仓）
+    if not strategy.paper_trading:
+        engine.cancel_all_orders()
 
     while True:
         try:
@@ -140,6 +141,9 @@ def main(user_id: str = "default"):
             # 2. 持仓检查 —— 止盈/止损（多空独立检查）
             if risk.position:
                 reason = risk.should_close(price)
+                entry = risk._entry_price
+                chg = (price - entry) / entry * 100
+                logger.info(f"📌 [{user_id}] 多仓 | 入场:{entry:.0f} 当前:{price:.0f} 涨跌:{chg:+.2f}% 止盈:{risk.min_profit_rate*100:.1f}% 止损:{risk.max_loss_rate*100:.1f}% {'🔔 '+reason if reason else '⏳ 持有中'}")
                 if reason:
                     pnl = risk.calc_pnl(price)
                     risk.record_trade(pnl, exit_price=price)
@@ -156,6 +160,10 @@ def main(user_id: str = "default"):
                         result = engine.market_sell(CONTRACT_SYMBOL, MAX_POSITION_USDT)
                         save_real_order(result, CONTRACT_SYMBOL, "SELL", "LONG",
                                         strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
+                        bo_id = result.get("info", result).get("orderId") or result.get("id")
+                        active = get_latest_active_trade("LONG")
+                        if active and bo_id:
+                            close_local_trade(active["id"], bo_id, price, pnl)
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "SELL", "LONG", price,
                                        signal_type="tp_sl", strategy_name=strategy.__class__.__name__,
@@ -164,6 +172,9 @@ def main(user_id: str = "default"):
 
             if risk.short_position:
                 reason = risk.should_close_short(price)
+                entry = risk._short_entry_price
+                chg = (entry - price) / entry * 100
+                logger.info(f"📌 [{user_id}] 空仓 | 入场:{entry:.0f} 当前:{price:.0f} 涨跌:{chg:+.2f}% 止盈:{risk.min_profit_rate*100:.1f}% 止损:{risk.max_loss_rate*100:.1f}% {'🔔 '+reason if reason else '⏳ 持有中'}")
                 if reason:
                     pnl = risk.calc_short_pnl(price)
                     risk.close_short(pnl, exit_price=price)
@@ -179,11 +190,18 @@ def main(user_id: str = "default"):
                         result = engine.market_buy_cover(CONTRACT_SYMBOL, MAX_POSITION_USDT)
                         save_real_order(result, CONTRACT_SYMBOL, "BUY", "SHORT",
                                         strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
+                        bo_id = result.get("info", result).get("orderId") or result.get("id")
+                        active = get_latest_active_trade("SHORT")
+                        if active and bo_id:
+                            close_local_trade(active["id"], bo_id, price, pnl)
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "BUY", "SHORT", price,
                                        signal_type="tp_sl", strategy_name=strategy.__class__.__name__,
                                        msg=f"TP/SL平空 @ {price} | PnL:{pnl:+.2f}")
                     next_trade_time = time.time() + POSITION_COOLDOWN_MINUTES * 60
+
+            if not risk.position and not risk.short_position:
+                logger.info(f"📌 [{user_id}] 无持仓")
 
             # 3. 生成信号
             signal, indicators = strategy.generate_signal(df)
@@ -226,9 +244,14 @@ def main(user_id: str = "default"):
                                     f"价值: {pos_value:.2f} USDT"
                                 )
                                 if not strategy.paper_trading:
-                                    result = engine.market_sell_short(CONTRACT_SYMBOL, MAX_POSITION_USDT)
+                                    result = engine.limit_sell_short_open()
                                     save_real_order(result, CONTRACT_SYMBOL, "SELL", "SHORT",
                                                     strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                                    bo_id = result.get("info", result).get("orderId") or result.get("id")
+                                    if bo_id:
+                                        create_local_trade(CONTRACT_SYMBOL, "SHORT", bo_id,
+                                                           price, FIXED_ORDER_QTY, LEVERAGE,
+                                                           strategy.__class__.__name__)
                                     engine.set_tp_sl_short(price)
                                 else:
                                     save_sim_order(CONTRACT_SYMBOL, "SELL", "SHORT", price,
@@ -254,6 +277,10 @@ def main(user_id: str = "default"):
                         result = engine.market_buy_cover(CONTRACT_SYMBOL, MAX_POSITION_USDT)
                         save_real_order(result, CONTRACT_SYMBOL, "BUY", "SHORT",
                                         strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
+                        bo_id = result.get("info", result).get("orderId") or result.get("id")
+                        active = get_latest_active_trade("SHORT")
+                        if active and bo_id:
+                            close_local_trade(active["id"], bo_id, price, pnl)
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "BUY", "SHORT", price,
                                        signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
@@ -282,9 +309,14 @@ def main(user_id: str = "default"):
                                     f"价值: {pos_value:.2f} USDT"
                                 )
                                 if not strategy.paper_trading:
-                                    result = engine.market_buy(CONTRACT_SYMBOL, MAX_POSITION_USDT)
+                                    result = engine.limit_buy_open()
                                     save_real_order(result, CONTRACT_SYMBOL, "BUY", "LONG",
                                                     strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                                    bo_id = result.get("info", result).get("orderId") or result.get("id")
+                                    if bo_id:
+                                        create_local_trade(CONTRACT_SYMBOL, "LONG", bo_id,
+                                                           price, FIXED_ORDER_QTY, LEVERAGE,
+                                                           strategy.__class__.__name__)
                                     engine.set_tp_sl_long(price)
                                 else:
                                     save_sim_order(CONTRACT_SYMBOL, "BUY", "LONG", price,
@@ -310,6 +342,10 @@ def main(user_id: str = "default"):
                         result = engine.market_sell(CONTRACT_SYMBOL, MAX_POSITION_USDT)
                         save_real_order(result, CONTRACT_SYMBOL, "SELL", "LONG",
                                         strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
+                        bo_id = result.get("info", result).get("orderId") or result.get("id")
+                        active = get_latest_active_trade("LONG")
+                        if active and bo_id:
+                            close_local_trade(active["id"], bo_id, price, pnl)
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "SELL", "LONG", price,
                                        signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,

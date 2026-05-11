@@ -16,6 +16,8 @@ from db_manager import (
     get_real_order,
     get_real_orders,
     get_real_order_stats,
+    get_local_trades,
+    get_local_trade_stats,
     fetch_one,
     fetch_all,
     execute,
@@ -228,6 +230,44 @@ def api_order_detail(order_id):
     if not o:
         return json_err("订单不存在", http_status=404)
     return json_ok(o)
+
+
+@app.route("/api/local-trades")
+def api_local_trades():
+    """本地订单列表（开平一条记录），持仓中自动计算未实现盈亏"""
+    try:
+        limit = int(request.args.get("limit", 50))
+        offset = int(request.args.get("offset", 0))
+        status = request.args.get("status") or None
+        direction = request.args.get("direction") or None
+        trades = get_local_trades(limit=limit, offset=offset, status=status, direction=direction)
+        stats = get_local_trade_stats()
+
+        # 获取当前合约价格，为持仓中的订单计算未实现盈亏
+        current_price = None
+        try:
+            proxies = get_proxy_config()
+            ex = ccxt.binance({"enableRateLimit": True, "proxies": proxies})
+            ticker = ex.fetch_ticker(CONTRACT_SYMBOL)
+            current_price = float(ticker["last"])
+        except:
+            pass
+
+        if current_price:
+            for t in trades:
+                if t["status"] == "持仓中" and t["open_price"] and float(t["open_price"]) > 0:
+                    entry = float(t["open_price"])
+                    qty = float(t["quantity"] or 0)
+                    if t["direction"] == "LONG":
+                        upnl = round((current_price - entry) * qty, 2)
+                    else:
+                        upnl = round((entry - current_price) * qty, 2)
+                    t["current_price"] = current_price
+                    t["unrealized_pnl"] = upnl
+
+        return json_ok({"trades": trades, "stats": stats, "current_price": current_price})
+    except Exception as e:
+        return json_err(str(e))
 
 
 # ── 策略查询 ────────────────────────────────────────────────
@@ -457,17 +497,34 @@ def api_account():
                 })
 
         positions = []
-        for p in info.get("positions", []):
-            if float(p.get("positionAmt", "0")) != 0:
-                positions.append({
-                    "symbol": p.get("symbol"),
-                    "side": p.get("positionSide"),
-                    "size": float(p.get("positionAmt", 0)),
-                    "entry_price": float(p.get("entryPrice", 0)),
-                    "mark_price": float(p.get("markPrice", 0)),
-                    "unrealized_pnl": float(p.get("unrealizedPnl", 0)),
-                    "pnl_pct": round(float(p.get("unrealizedPnl", 0)) / max(float(p.get("isolatedWallet", "0") or 0), 1) * 100, 2),
-                })
+        try:
+            pos_data = exchange.fetch_positions([CONTRACT_SYMBOL])
+            for p in pos_data:
+                amt = float(p.get("contracts", 0) or 0)
+                if amt > 0:
+                    side = p.get("info", {}).get("positionSide", "LONG")
+                    wallet = max(float(p.get("initialMargin", 0) or 0), 1)
+                    positions.append({
+                        "symbol": p.get("symbol"),
+                        "side": side,
+                        "size": amt,
+                        "entry_price": float(p.get("entryPrice", 0)),
+                        "mark_price": float(p.get("markPrice", 0)),
+                        "unrealized_pnl": round(float(p.get("unrealizedPnl", 0)), 2),
+                        "pnl_pct": round(float(p.get("unrealizedPnl", 0)) / wallet * 100, 2),
+                    })
+        except:
+            for p in info.get("positions", []):
+                if float(p.get("positionAmt", "0")) != 0:
+                    positions.append({
+                        "symbol": p.get("symbol"),
+                        "side": p.get("positionSide"),
+                        "size": float(p.get("positionAmt", 0)),
+                        "entry_price": float(p.get("entryPrice", 0)),
+                        "mark_price": float(p.get("markPrice", 0)),
+                        "unrealized_pnl": float(p.get("unrealizedPnl", 0)),
+                        "pnl_pct": 0,
+                    })
 
         main_asset = next((a for a in assets if a["asset"] == "USDT"), {"wallet": 0, "unrealized_pnl": 0, "total": 0})
         return json_ok_data({
@@ -501,6 +558,11 @@ def strategies_page():
     return send_from_directory("static", "index.html")
 
 
+@app.route("/local-orders")
+def local_orders_page():
+    return send_from_directory("static", "index.html")
+
+
 @app.route("/strategy/<int:strategy_id>")
 def strategy_detail_page(strategy_id):
     return send_from_directory("static", "index.html")
@@ -524,7 +586,13 @@ def api_dashboard():
         strat_count = fetch_one("SELECT COUNT(*) cnt FROM strategies WHERE enabled = 1")
         strategies = list_strategies(enabled_only=True)
         active_strats = [
-            {"id": s.id, "name": s.name, "type": s.strategy_type, "paper": s.paper_trading}
+            {
+                "id": s.id, "name": s.name,
+                "strategy_type": s.strategy_type, "symbol": s.symbol, "timeframe": s.timeframe,
+                "paper_trading": s.paper_trading, "enabled": s.enabled,
+                "leverage": s.leverage, "max_position_usdt": s.max_position_usdt,
+                "min_profit_rate": s.min_profit_rate, "max_loss_rate": s.max_loss_rate,
+            }
             for s in strategies
         ]
 

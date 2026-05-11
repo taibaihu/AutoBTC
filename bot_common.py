@@ -152,6 +152,31 @@ def _start_bots() -> str:
     return f"⚠️ 启动中...当前进程: {pids}"
 
 
+
+def _query_local_trades() -> str:
+    """查询本地订单（开平一条记录）"""
+    try:
+        sys.path.insert(0, str(BASE_DIR))
+        from db_manager import get_local_trades, get_local_trade_stats
+        stats = get_local_trade_stats()
+        trades = get_local_trades(limit=10, status="\u6301\u4ed3\u4e2d")
+        lines = [
+            f"\U0001f4cb \u672c\u5730\u8ba2\u5355 ({stats['open_trades']}\u6301\u4ed3 / {stats['total_trades']}\u603b\u8ba1)",
+            f"  \u603b\u76c8\u4e8f: {stats['total_pnl']:+.2f} | \u80dc\u7387: {stats['win_rate']}%",
+            "\u2501" * 15,
+        ]
+        for t in trades:
+            d = "\U0001f7e2\u591a" if t["direction"] == "LONG" else "\U0001f534\u7a7a"
+            op = float(t["open_price"] or 0)
+            q = float(t["quantity"] or 0)
+            lines.append(f"#{t['id']} {d} \u5f00:{op:.0f} \u91cf:{q:.4f} | {t['status']}")
+        if not trades:
+            lines.append("\u6682\u65e0\u6301\u4ed3\u4e2d\u7684\u8ba2\u5355")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"(\u67e5\u8be2\u5931\u8d25: {e})"
+
+
 CMDS = {
     "status":   lambda: run_cmd(["ps", "aux", "|", "grep", "main.py"]),
     "ps":       lambda: run_cmd(["ps", "aux", "|", "grep", "main.py"]),
@@ -163,7 +188,8 @@ CMDS = {
     "回测":     lambda: run_cmd([sys.executable, "backtest_10d.py"], timeout=180),
     "backtest": lambda: run_cmd([sys.executable, "backtest_10d.py"], timeout=180),
 
-    "持仓":     lambda: "⚠️ 当前为模拟交易(100x)，查看 main.log 获取信号状态",
+    "持仓":     lambda: _query_local_trades(),
+    "本地单":   lambda: _query_local_trades(),
 
     "restart":  lambda: (
         run_cmd(["kill"] + [str(p) for p in _get_bot_pids()]) + "\n" + _start_bots()
