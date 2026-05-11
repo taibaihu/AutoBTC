@@ -194,24 +194,29 @@ def main(user_id: str = "default"):
                     else:
                         ok, reason = risk.can_trade()
                         if ok:
-                            risk.open_short(price)
-                            label = "🔴 合约开空(模拟)" if strategy.paper_trading else "🔴 合约开空"
-                            pos_value = FIXED_ORDER_QTY * price
-                            logger.info(f"{label} | {price:.0f} | 数量:{FIXED_ORDER_QTY}BTC | {LEVERAGE}x | 价值:{pos_value:.2f}U")
-                            notifier.send(
-                                f"<b>{label}</b>\n"
-                                f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
-                                f"数量: {FIXED_ORDER_QTY} BTC | {LEVERAGE}x\n"
-                                f"价值: {pos_value:.2f} USDT"
-                            )
-                            if not strategy.paper_trading:
-                                result = engine.market_sell_short(CONTRACT_SYMBOL, MAX_POSITION_USDT)
-                                save_real_order(result, CONTRACT_SYMBOL, "SELL", "SHORT",
-                                                strategy.__class__.__name__, LEVERAGE, paper_trading=0)
-                                engine.set_tp_sl_short(price)
+                            # 互斥检查: 有反向持仓则不开
+                            existing_long = engine.get_position_size(CONTRACT_SYMBOL, "LONG")
+                            if existing_long > 0:
+                                logger.warning(f"⛔ 已有反向多单 {existing_long:.4f} BTC，不開空")
                             else:
-                                save_sim_order(CONTRACT_SYMBOL, "SELL", "SHORT", price,
-                                               signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
+                                risk.open_short(price)
+                                label = "🔴 合约开空(模拟)" if strategy.paper_trading else "🔴 合约开空"
+                                pos_value = FIXED_ORDER_QTY * price
+                                logger.info(f"{label} | {price:.0f} | 数量:{FIXED_ORDER_QTY}BTC | {LEVERAGE}x | 价值:{pos_value:.2f}U")
+                                notifier.send(
+                                    f"<b>{label}</b>\n"
+                                    f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
+                                    f"数量: {FIXED_ORDER_QTY} BTC | {LEVERAGE}x\n"
+                                    f"价值: {pos_value:.2f} USDT"
+                                )
+                                if not strategy.paper_trading:
+                                    result = engine.market_sell_short(CONTRACT_SYMBOL, MAX_POSITION_USDT)
+                                    save_real_order(result, CONTRACT_SYMBOL, "SELL", "SHORT",
+                                                    strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                                    engine.set_tp_sl_short(price)
+                                else:
+                                    save_sim_order(CONTRACT_SYMBOL, "SELL", "SHORT", price,
+                                                   signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
                                                msg=f"开空 @ {price}")
                         else:
                             logger.warning(f"⛔ 风控拦截: {reason}")
@@ -245,23 +250,28 @@ def main(user_id: str = "default"):
                     else:
                         ok, reason = risk.can_trade()
                         if ok:
-                            risk.open_position(price)
-                            label = "🟢 合约开多(模拟)" if strategy.paper_trading else "🟢 合约开多"
-                            pos_value = FIXED_ORDER_QTY * price
-                            logger.info(f"{label} | {price:.0f} | 数量:{FIXED_ORDER_QTY}BTC | {LEVERAGE}x | 价值:{pos_value:.2f}U")
-                            notifier.send(
-                                f"<b>{label}</b>\n"
-                                f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
-                                f"数量: {FIXED_ORDER_QTY} BTC | {LEVERAGE}x\n"
-                                f"价值: {pos_value:.2f} USDT"
-                            )
-                            if not strategy.paper_trading:
-                                result = engine.market_buy(CONTRACT_SYMBOL, MAX_POSITION_USDT)
-                                save_real_order(result, CONTRACT_SYMBOL, "BUY", "LONG",
-                                                strategy.__class__.__name__, LEVERAGE, paper_trading=0)
-                                engine.set_tp_sl_long(price)
+                            # 互斥检查: 有反向持仓则不开
+                            existing_short = engine.get_position_size(CONTRACT_SYMBOL, "SHORT")
+                            if existing_short > 0:
+                                logger.warning(f"⛔ 已有反向空单 {existing_short:.4f} BTC，不开多")
                             else:
-                                save_sim_order(CONTRACT_SYMBOL, "BUY", "LONG", price,
+                                risk.open_position(price)
+                                label = "🟢 合约开多(模拟)" if strategy.paper_trading else "🟢 合约开多"
+                                pos_value = FIXED_ORDER_QTY * price
+                                logger.info(f"{label} | {price:.0f} | 数量:{FIXED_ORDER_QTY}BTC | {LEVERAGE}x | 价值:{pos_value:.2f}U")
+                                notifier.send(
+                                    f"<b>{label}</b>\n"
+                                    f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
+                                    f"数量: {FIXED_ORDER_QTY} BTC | {LEVERAGE}x\n"
+                                    f"价值: {pos_value:.2f} USDT"
+                                )
+                                if not strategy.paper_trading:
+                                    result = engine.market_buy(CONTRACT_SYMBOL, MAX_POSITION_USDT)
+                                    save_real_order(result, CONTRACT_SYMBOL, "BUY", "LONG",
+                                                    strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                                    engine.set_tp_sl_long(price)
+                                else:
+                                    save_sim_order(CONTRACT_SYMBOL, "BUY", "LONG", price,
                                                signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
                                                msg=f"开多 @ {price}")
                         else:
