@@ -44,6 +44,8 @@ STRATEGY_KWARGS = {"buy_zone": 0.20, "cooldown_bars": 2, "adx_threshold": 35, "m
 # False = 始终遵守EMA趋势过滤（旧逻辑）
 RANGE_IGNORE_TREND_FILTER = True
 
+# ===== 启动冷却（秒）：防止重启后立即开仓 =====
+STARTUP_COOLDOWN = 120  # 重启后等待2分钟再交易
 # ===== RSI 多周期预警 =====
 RSI_TIMEFRAMES = ["15m", "1h", "2h"]   # 监控的时间周期
 RSI_PERIOD = 14                       # RSI 计算周期

@@ -15,7 +15,7 @@ from config import (
     FIXED_ORDER_QTY,
     STRATEGY_NAME, STRATEGY_KWARGS,
     RSI_TIMEFRAMES, RSI_PERIOD, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_ALERT_COOLDOWN,
-    POSITION_COOLDOWN_MINUTES,
+    POSITION_COOLDOWN_MINUTES, STARTUP_COOLDOWN,
 )
 from engine import FuturesEngine, OKXEngine
 from strategy import BUY, SELL, HOLD, STRATEGIES, calc_rsi_series, calc_macd, calc_kdj, calc_bollinger_bands
@@ -94,7 +94,7 @@ def main(user_id: str = "default"):
     notifier.send(f"<b>🚀 合约引擎启动</b>\n用户: {user_id}\n{CONTRACT_SYMBOL} {TIMEFRAME} {LEVERAGE}x\n策略: {STRATEGY_NAME}")
 
     last_rsi_alert = 0.0
-    next_trade_time = 0.0
+    next_trade_time = time.time() + STARTUP_COOLDOWN
 
     is_short_strategy = cfg.strategy_type in ("fast_range_short",)
     if is_short_strategy:

@@ -217,7 +217,7 @@ class FuturesEngine:
         return float(self.exchange.price_to_precision(self._symbol, price))
 
     def set_tp_sl_long(self, entry_price: float):
-        """开多后挂止盈止损单 (reduceOnly, 币安侧)"""
+        """开多后挂止盈止损单 (币安侧)"""
         qty = self._get_precise_qty()
         tp_price = self._get_precise_price(entry_price * (1 + MIN_PROFIT_RATE))
         sl_price = self._get_precise_price(entry_price * (1 - MAX_LOSS_RATE))
@@ -226,7 +226,7 @@ class FuturesEngine:
         try:
             self.exchange.create_order(
                 self._symbol, "TAKE_PROFIT_MARKET", "sell", qty, None,
-                {"stopPrice": tp_price, "reduceOnly": True, "positionSide": "LONG"},
+                {"stopPrice": tp_price, "positionSide": "LONG"},
             )
             logger.info(f"✅ 多单止盈挂单 {tp_price}")
         except Exception as e:
@@ -234,14 +234,14 @@ class FuturesEngine:
         try:
             self.exchange.create_order(
                 self._symbol, "STOP_MARKET", "sell", qty, None,
-                {"stopPrice": sl_price, "reduceOnly": True, "positionSide": "LONG"},
+                {"stopPrice": sl_price, "positionSide": "LONG"},
             )
             logger.info(f"✅ 多单止损挂单 {sl_price}")
         except Exception as e:
             logger.warning(f"止损挂单失败: {e}")
 
     def set_tp_sl_short(self, entry_price: float):
-        """开空后挂止盈止损单 (reduceOnly, 币安侧)"""
+        """开空后挂止盈止损单 (币安侧)"""
         qty = self._get_precise_qty()
         tp_price = self._get_precise_price(entry_price * (1 - MIN_PROFIT_RATE))
         sl_price = self._get_precise_price(entry_price * (1 + MAX_LOSS_RATE))
@@ -250,7 +250,7 @@ class FuturesEngine:
         try:
             self.exchange.create_order(
                 self._symbol, "TAKE_PROFIT_MARKET", "buy", qty, None,
-                {"stopPrice": tp_price, "reduceOnly": True, "positionSide": "SHORT"},
+                {"stopPrice": tp_price, "positionSide": "SHORT"},
             )
             logger.info(f"✅ 空单止盈挂单 {tp_price}")
         except Exception as e:
@@ -258,7 +258,7 @@ class FuturesEngine:
         try:
             self.exchange.create_order(
                 self._symbol, "STOP_MARKET", "buy", qty, None,
-                {"stopPrice": sl_price, "reduceOnly": True, "positionSide": "SHORT"},
+                {"stopPrice": sl_price, "positionSide": "SHORT"},
             )
             logger.info(f"✅ 空单止损挂单 {sl_price}")
         except Exception as e:
