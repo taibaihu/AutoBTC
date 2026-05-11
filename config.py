@@ -23,7 +23,7 @@ SHORT_MA = 7                 # 短期均线周期
 LONG_MA = 25                 # 长期均线周期
 
 # ===== 模拟交易模式（True=只算不买，False=实盘）=====
-PAPER_TRADING = True
+PAPER_TRADING = False
 
 # ===== 风控 =====
 FIXED_ORDER_QTY = 0.05        # 固定开仓数量 (BTC)

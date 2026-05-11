@@ -136,13 +136,14 @@ class FuturesEngine:
         except Exception:
             return 0.0
 
-    def get_position(self) -> Optional[dict]:
-        """查询当前多头持仓，返回 {size, entry_price, unrealized_pnl} 或 None"""
+    def get_position(self, side: str = "LONG") -> Optional[dict]:
+        """查询持仓，返回 {size, entry_price, unrealized_pnl} 或 None"""
         try:
             positions = self.exchange.fetch_positions([self._symbol])
             for p in positions:
                 size = float(p.get("contracts", 0) or 0)
-                if size > 0 and p.get("side") == "long":
+                p_side = p.get("positionSide", "")
+                if size > 0 and p_side == side:
                     return {
                         "size": size,
                         "entry_price": float(p["entryPrice"]),

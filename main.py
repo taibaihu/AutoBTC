@@ -100,6 +100,22 @@ def main(user_id: str = "default"):
     if is_short_strategy:
         logger.info("📉 做空模式: SELL=开空, BUY=平空")
 
+    # ── 启动时同步币安实际持仓 ──
+    if is_short_strategy:
+        existing = engine.get_position("SHORT")
+        if existing:
+            risk.open_short(existing["entry_price"])
+            logger.info(f"🔄 同步到现有空仓 | 数量:{existing['size']:.4f} BTC | 入场:{existing['entry_price']:.0f}")
+            if not strategy.paper_trading:
+                engine.set_tp_sl_short(existing["entry_price"])
+    else:
+        existing = engine.get_position("LONG")
+        if existing:
+            risk.open_position(existing["entry_price"])
+            logger.info(f"🔄 同步到现有多仓 | 数量:{existing['size']:.4f} BTC | 入场:{existing['entry_price']:.0f}")
+            if not strategy.paper_trading:
+                engine.set_tp_sl_long(existing["entry_price"])
+
     while True:
         try:
             # 1. 获取合约行情
