@@ -240,10 +240,10 @@ class FastRangeStrategy(Strategy):
                  bb_period: int = 20,
                  bb_std: float = 2.0,
                  adx_period: int = 14,
-                 adx_threshold: float = 30.0,
+                 adx_threshold: float = 35.0,
                  bbw_ratio_upper: float = 2.0,
                  bbw_ratio_lower: float = 0.25,
-                 max_slope: float = 0.01,
+                 max_slope: float = 0.02,
                  shadow_body_ratio: float = 1.2,
                  max_body_ratio: float = 0.6,
                  buy_zone: float = 0.10,
@@ -467,8 +467,8 @@ class FastRangeStrategy(Strategy):
             indicators["sell_rejected"] = "缺少反转确认"
 
         # ── 买入: 前一根K线的低点触及/跌破下轨 + 确认反弹 ──
-        #       大方向下跌时不抄底
-        if not creeping and not is_downtrend:
+        #       大方向下跌时不抄底（震荡市 RANGE_IGNORE_TREND_FILTER 时取消此限制）
+        if not creeping and (not is_downtrend or (cfg.RANGE_IGNORE_TREND_FILTER and adx_val < self.adx_threshold)):
             prev = df.iloc[-2]
             u_prev = float(upper.iloc[-2])
             l_prev = float(lower.iloc[-2])
@@ -581,10 +581,10 @@ class FastRangeShortStrategy(FastRangeStrategy):
             indicators["buy_rejected"] = "缺少反转确认"
 
         # ── 开空(SELL): 前一根K线高点触及上轨 + 反转确认 ──
-        #       大方向上涨时不开空
+        #       大方向上涨时不开空（震荡市 RANGE_IGNORE_TREND_FILTER 时取消此限制）
         if creeping_rise:
             indicators["creeping_rise"] = 1
-        elif is_uptrend:
+        elif is_uptrend and not (cfg.RANGE_IGNORE_TREND_FILTER and adx_val < self.adx_threshold):
             indicators["uptrend_block"] = 1
         else:
             prev = df.iloc[-2]

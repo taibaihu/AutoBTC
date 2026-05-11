@@ -12,6 +12,7 @@ from config import (
     SYMBOL, CONTRACT_SYMBOL, TIMEFRAME, LIMIT, SHORT_MA, LONG_MA,
     MAX_POSITION_USDT, DAILY_LOSS_LIMIT, MAX_TRADES_PER_DAY,
     MIN_PROFIT_RATE, MAX_LOSS_RATE, LEVERAGE,
+    FIXED_ORDER_QTY,
     STRATEGY_NAME, STRATEGY_KWARGS,
     RSI_TIMEFRAMES, RSI_PERIOD, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_ALERT_COOLDOWN,
     POSITION_COOLDOWN_MINUTES,
@@ -79,6 +80,7 @@ def main(user_id: str = "default"):
 
     risk = RiskManager(
         max_position_usdt=MAX_POSITION_USDT,
+        order_qty=FIXED_ORDER_QTY,
         daily_loss_limit=DAILY_LOSS_LIMIT,
         max_trades_per_day=MAX_TRADES_PER_DAY,
         min_profit_rate=MIN_PROFIT_RATE,
@@ -115,9 +117,9 @@ def main(user_id: str = "default"):
                 live_okx = None
             if live_binance and live_okx:
                 spread = live_binance - live_okx
-                logger.info(f"🔥 合约价 B:{live_binance:.2f}  O合约价:{live_okx:.2f}  Δ:{spread:+.2f}")
+                logger.info(f"🔥 合约价 B:{live_binance:.0f}  O合约价:{live_okx:.0f}  Δ:{spread:+.2f}")
             elif live_binance:
-                logger.info(f"🔥 合约价 B:{live_binance:.2f}  O合约价:获取失败")
+                logger.info(f"🔥 合约价 B:{live_binance:.0f}  O合约价:获取失败")
 
             # 2. 持仓检查 —— 止盈/止损（多空独立检查）
             if risk.position:
@@ -127,13 +129,21 @@ def main(user_id: str = "default"):
                     risk.record_trade(pnl, exit_price=price)
                     engine.cancel_all_orders()
                     close_label = "多单止盈止损"
-                    logger.info(f"💰 {reason} | 当前价: {price:.4f} | 盈亏: {pnl:+.2f} ({LEVERAGE}x)")
+                    logger.info(f"💰 {reason} | 当前价: {price:.0f} | 盈亏: {pnl:+.2f} ({LEVERAGE}x)")
                     notifier.send(
                         f"<b>{reason}</b>\n"
                         f"交易对: {CONTRACT_SYMBOL}\n"
-                        f"价格: {price:.4f}\n"
+                        f"价格: {price:.0f}\n"
                         f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)"
                     )
+                    if not strategy.paper_trading:
+                        result = engine.market_sell(CONTRACT_SYMBOL, MAX_POSITION_USDT)
+                        save_real_order(result, CONTRACT_SYMBOL, "SELL", "LONG",
+                                        strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
+                    else:
+                        save_sim_order(CONTRACT_SYMBOL, "SELL", "LONG", price,
+                                       signal_type="tp_sl", strategy_name=strategy.__class__.__name__,
+                                       msg=f"TP/SL平多 @ {price} | PnL:{pnl:+.2f}")
                     next_trade_time = time.time() + POSITION_COOLDOWN_MINUTES * 60
 
             if risk.short_position:
@@ -142,13 +152,21 @@ def main(user_id: str = "default"):
                     pnl = risk.calc_short_pnl(price)
                     risk.close_short(pnl, exit_price=price)
                     engine.cancel_all_orders()
-                    logger.info(f"💰 {reason} | 当前价: {price:.4f} | 盈亏: {pnl:+.2f} ({LEVERAGE}x)")
+                    logger.info(f"💰 {reason} | 当前价: {price:.0f} | 盈亏: {pnl:+.2f} ({LEVERAGE}x)")
                     notifier.send(
                         f"<b>{reason}</b>\n"
                         f"交易对: {CONTRACT_SYMBOL}\n"
-                        f"价格: {price:.4f}\n"
+                        f"价格: {price:.0f}\n"
                         f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)"
                     )
+                    if not strategy.paper_trading:
+                        result = engine.market_buy_cover(CONTRACT_SYMBOL, MAX_POSITION_USDT)
+                        save_real_order(result, CONTRACT_SYMBOL, "BUY", "SHORT",
+                                        strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
+                    else:
+                        save_sim_order(CONTRACT_SYMBOL, "BUY", "SHORT", price,
+                                       signal_type="tp_sl", strategy_name=strategy.__class__.__name__,
+                                       msg=f"TP/SL平空 @ {price} | PnL:{pnl:+.2f}")
                     next_trade_time = time.time() + POSITION_COOLDOWN_MINUTES * 60
 
             # 3. 生成信号
@@ -158,11 +176,11 @@ def main(user_id: str = "default"):
             indicator_parts = []
             for k, v in indicators.items():
                 if isinstance(v, float):
-                    indicator_parts.append(f"{k}: {v:.4f}")
+                    indicator_parts.append(f"{k}: {v:.0f}")
                 else:
                     indicator_parts.append(f"{k}: {v}")
             logger.info(
-                f"📊 价格: {price:.4f} | "
+                f"📊 价格: {price:.0f} | "
                 f"{' | '.join(indicator_parts)} | "
                 f"信号: {SIGNAL_MAP[signal]}"
             )
@@ -178,18 +196,19 @@ def main(user_id: str = "default"):
                         if ok:
                             risk.open_short(price)
                             label = "🔴 合约开空(模拟)" if strategy.paper_trading else "🔴 合约开空"
-                            pos_value = MAX_POSITION_USDT * LEVERAGE
-                            logger.info(f"{label} | {price:.4f} | 保证金:{MAX_POSITION_USDT}U | {LEVERAGE}x | 名义价值:{pos_value:.2f}U")
+                            pos_value = FIXED_ORDER_QTY * price
+                            logger.info(f"{label} | {price:.0f} | 数量:{FIXED_ORDER_QTY}BTC | {LEVERAGE}x | 价值:{pos_value:.2f}U")
                             notifier.send(
                                 f"<b>{label}</b>\n"
-                                f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
-                                f"保证金: {MAX_POSITION_USDT} USDT | {LEVERAGE}x\n"
-                                f"名义价值: {pos_value:.2f} USDT"
+                                f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
+                                f"数量: {FIXED_ORDER_QTY} BTC | {LEVERAGE}x\n"
+                                f"价值: {pos_value:.2f} USDT"
                             )
                             if not strategy.paper_trading:
                                 result = engine.market_sell_short(CONTRACT_SYMBOL, MAX_POSITION_USDT)
                                 save_real_order(result, CONTRACT_SYMBOL, "SELL", "SHORT",
                                                 strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                                engine.set_tp_sl_short(price)
                             else:
                                 save_sim_order(CONTRACT_SYMBOL, "SELL", "SHORT", price,
                                                signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
@@ -203,10 +222,10 @@ def main(user_id: str = "default"):
                     risk.close_short(pnl, exit_price=price)
                     next_trade_time = time.time() + POSITION_COOLDOWN_MINUTES * 60
                     label = "🟢 合约平空(模拟)" if strategy.paper_trading else "🟢 合约平空"
-                    logger.info(f"{label} | {price:.4f} | 盈亏: {pnl:+.2f}")
+                    logger.info(f"{label} | {price:.0f} | 盈亏: {pnl:+.2f}")
                     notifier.send(
                         f"<b>{label}</b>\n"
-                        f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
+                        f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
                         f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)\n"
                         f"统计: 今日{risk.trade_count}笔 / 盈亏{risk.daily_pnl:+.2f}"
                     )
@@ -228,18 +247,19 @@ def main(user_id: str = "default"):
                         if ok:
                             risk.open_position(price)
                             label = "🟢 合约开多(模拟)" if strategy.paper_trading else "🟢 合约开多"
-                            pos_value = MAX_POSITION_USDT * LEVERAGE
-                            logger.info(f"{label} | {price:.4f} | 保证金:{MAX_POSITION_USDT}U | {LEVERAGE}x | 名义价值:{pos_value:.2f}U")
+                            pos_value = FIXED_ORDER_QTY * price
+                            logger.info(f"{label} | {price:.0f} | 数量:{FIXED_ORDER_QTY}BTC | {LEVERAGE}x | 价值:{pos_value:.2f}U")
                             notifier.send(
                                 f"<b>{label}</b>\n"
-                                f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
-                                f"保证金: {MAX_POSITION_USDT} USDT | {LEVERAGE}x\n"
-                                f"名义价值: {pos_value:.2f} USDT"
+                                f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
+                                f"数量: {FIXED_ORDER_QTY} BTC | {LEVERAGE}x\n"
+                                f"价值: {pos_value:.2f} USDT"
                             )
                             if not strategy.paper_trading:
                                 result = engine.market_buy(CONTRACT_SYMBOL, MAX_POSITION_USDT)
                                 save_real_order(result, CONTRACT_SYMBOL, "BUY", "LONG",
                                                 strategy.__class__.__name__, LEVERAGE, paper_trading=0)
+                                engine.set_tp_sl_long(price)
                             else:
                                 save_sim_order(CONTRACT_SYMBOL, "BUY", "LONG", price,
                                                signal_type="strategy_signal", strategy_name=strategy.__class__.__name__,
@@ -253,10 +273,10 @@ def main(user_id: str = "default"):
                     risk.record_trade(pnl, exit_price=price)
                     next_trade_time = time.time() + POSITION_COOLDOWN_MINUTES * 60
                     label = "🔴 合约平多(模拟)" if strategy.paper_trading else "🔴 合约平多"
-                    logger.info(f"{label} | {price:.4f} | 盈亏: {pnl:+.2f}")
+                    logger.info(f"{label} | {price:.0f} | 盈亏: {pnl:+.2f}")
                     notifier.send(
                         f"<b>{label}</b>\n"
-                        f"{CONTRACT_SYMBOL} @ {price:.4f}\n"
+                        f"{CONTRACT_SYMBOL} @ {price:.0f}\n"
                         f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)\n"
                         f"统计: 今日{risk.trade_count}笔 / 盈亏{risk.daily_pnl:+.2f}"
                     )
@@ -325,7 +345,7 @@ def main(user_id: str = "default"):
             bb_15m = calc_bollinger_bands(df["close"], 20, 2)
 
             # 日志输出
-            rsi_parts = [f"{tf} B:{rsi_values[tf]:.1f}" for tf in RSI_TIMEFRAMES]
+            rsi_parts = [f"{tf} B:{rsi_values[tf]:.0f}" for tf in RSI_TIMEFRAMES]
             bb_parts = []
             if bb_15m:
                 pct = f"{bb_15m['position']*100:.0f}%"

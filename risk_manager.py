@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RiskManager:
     max_position_usdt: float = 100.0
+    order_qty: float = 0.05
     daily_loss_limit: float = 50.0
     max_trades_per_day: int = 20
     min_profit_rate: float = 0.01
@@ -39,8 +40,12 @@ class RiskManager:
             self._reset_day = today
 
     def _position_value(self) -> float:
-        """仓位名义价值 = 保证金 × 杠杆"""
-        return self.max_position_usdt * self.leverage
+        """仓位名义价值 = 持仓数量 × 入场价"""
+        if self._position:
+            return self.order_qty * self._entry_price
+        if self._short_position:
+            return self.order_qty * self._short_entry_price
+        return 0.0
 
     def has_position(self) -> bool:
         """是否有任意方向持仓"""

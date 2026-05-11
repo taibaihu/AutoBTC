@@ -26,17 +26,23 @@ LONG_MA = 25                 # 长期均线周期
 PAPER_TRADING = True
 
 # ===== 风控 =====
-MAX_POSITION_USDT = 100      # 单次最大仓位 (USDT)
+FIXED_ORDER_QTY = 0.05        # 固定开仓数量 (BTC)
+MAX_POSITION_USDT = 100      # 单次最大仓位 (USDT) — 旧参数，改用 FIXED_ORDER_QTY
 DAILY_LOSS_LIMIT = 50        # 每日最大亏损 (USDT)
 MAX_TRADES_PER_DAY = 20      # 每日最大交易次数
-MIN_PROFIT_RATE = 0.01       # 最小止盈比例 (1%)
-MAX_LOSS_RATE = 0.02         # 最大止损比例 (2%)
+MIN_PROFIT_RATE = 0.015       # 最小止盈比例 (1.5%)
+MAX_LOSS_RATE = 0.015         # 最大止损比例 (1.5%)
 
 # ===== 策略选择 =====
 STRATEGY_NAME = "fast_range"    # 策略名: ma_cross / rsi_revert / fast_range
-STRATEGY_KWARGS = {"buy_zone": 0.20, "cooldown_bars": 2}
+STRATEGY_KWARGS = {"buy_zone": 0.20, "cooldown_bars": 2, "adx_threshold": 35, "max_slope": 0.02}
 # cooldown_bars: 平仓后等待多少根K线再入场 (15分钟K线, 冷却30分钟=2根)
 # 如需自定义: STRATEGY_KWARGS = {"bb_period":20, "bb_std":2, "trend_ema_period":50}
+
+# ===== 震荡模式：是否忽略EMA趋势过滤 =====
+# True  = 震荡行情(ADX<threshold)下不看EMA方向，纯布林带高抛低吸
+# False = 始终遵守EMA趋势过滤（旧逻辑）
+RANGE_IGNORE_TREND_FILTER = True
 
 # ===== RSI 多周期预警 =====
 RSI_TIMEFRAMES = ["15m", "1h", "2h"]   # 监控的时间周期

@@ -175,6 +175,7 @@ def apply_to_config(cfg: StrategyConfig):
         strategy_kwargs["overbought"] = cfg.params.get("overbought", 80)
     elif cfg.strategy_type in ("fast_range", "fast_range_short"):
         for key in ("bb_period", "bb_std", "trend_ema_period", "adx_period",
+                     "adx_threshold", "max_slope",
                      "buy_zone", "sell_zone", "shadow_body_ratio", "max_body_ratio",
                      "creep_lookback", "creep_threshold",
                      "sell_shadow_ratio", "sell_max_body_ratio"):

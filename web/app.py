@@ -25,6 +25,11 @@ from db_manager import (
 )
 from strategy_manager import list_strategies, load_strategy
 
+import subprocess, re
+from pathlib import Path
+import ccxt
+from config import get_proxy_config, CONTRACT_SYMBOL, SYMBOL
+
 app = Flask(__name__)
 
 
@@ -366,6 +371,114 @@ def api_sim_orders():
 
 
 # ── 前端页面 ────────────────────────────────────────────────
+
+
+@app.route("/api/market")
+def api_market():
+    """实时行情 + 最新策略指标"""
+    try:
+        proxies = get_proxy_config()
+        exchange = ccxt.binance({"enableRateLimit": True, "proxies": proxies})
+        ticker = exchange.fetch_ticker(SYMBOL)
+        contract_ticker = exchange.fetch_ticker(CONTRACT_SYMBOL)
+        price = ticker["last"]
+        contract_price = contract_ticker["last"]
+        change_24h = ticker.get("percentage", 0)
+
+        # 从 main.log 解析指标
+        log_path = Path(__file__).parent.parent / "main.log"
+        indicators = {}
+        last_signal = ""
+        if log_path.exists():
+            lines = subprocess.run(["tail", "-80", str(log_path)], capture_output=True, text=True, timeout=5).stdout.splitlines()
+            for line in lines:
+                m = re.search(r'信号: (⚪观望|🟢开多|🔴开空|❌)', line)
+                if m:
+                    last_signal = m.group(1)
+                for key in ("价格", "bb_position", "adx", "uptrend_block", "cooldown", "趋势ema"):
+                    if key not in indicators:
+                        m2 = re.search(rf'{re.escape(key)}: (\S+)', line)
+                        if m2:
+                            indicators[key] = m2.group(1)
+
+        # 最新持仓状态
+        pos_info = {}
+        try:
+            positions = exchange.fetch_positions([CONTRACT_SYMBOL])
+            for p in positions:
+                if float(p.get("contracts", 0) or 0) > 0:
+                    pos_info = {
+                        "side": p.get("positionSide"),
+                        "size": float(p.get("contracts", 0)),
+                        "entry_price": float(p.get("entryPrice", 0)),
+                        "unrealized_pnl": float(p.get("unrealizedPnl", 0)),
+                        "mark_price": float(p.get("markPrice", 0)),
+                    }
+                    break
+        except:
+            pass
+
+        return json_ok_data({
+            "price": price,
+            "contract_price": contract_price,
+            "change_24h": round(change_24h, 2) if change_24h else 0,
+            "signal": last_signal or "未知",
+            "indicators": indicators,
+            "position": pos_info,
+        })
+    except Exception as e:
+        return json_err(str(e))
+
+
+@app.route("/api/account")
+def api_account():
+    """币安账户余额和持仓摘要"""
+    try:
+        proxies = get_proxy_config()
+        exchange = ccxt.binance({
+            "apiKey": os.getenv("BINANCE_API_KEY"),
+            "secret": os.getenv("BINANCE_SECRET_KEY"),
+            "enableRateLimit": True,
+            "proxies": proxies,
+            "options": {"defaultType": "future"},
+        })
+        balance = exchange.fetch_balance()
+        info = balance.get("info", {})
+        assets = []
+        for asset in info.get("assets", []):
+            wallet = asset.get("walletBalance", "0")
+            upnl = asset.get("unrealizedProfit", "0")
+            if float(wallet) > 0 or float(upnl) != 0:
+                assets.append({
+                    "asset": asset.get("asset"),
+                    "wallet": float(wallet),
+                    "unrealized_pnl": float(upnl),
+                    "total": float(wallet) + float(upnl),
+                })
+
+        positions = []
+        for p in info.get("positions", []):
+            if float(p.get("positionAmt", "0")) != 0:
+                positions.append({
+                    "symbol": p.get("symbol"),
+                    "side": p.get("positionSide"),
+                    "size": float(p.get("positionAmt", 0)),
+                    "entry_price": float(p.get("entryPrice", 0)),
+                    "mark_price": float(p.get("markPrice", 0)),
+                    "unrealized_pnl": float(p.get("unrealizedPnl", 0)),
+                    "pnl_pct": round(float(p.get("unrealizedPnl", 0)) / max(float(p.get("isolatedWallet", "0") or 0), 1) * 100, 2),
+                })
+
+        main_asset = next((a for a in assets if a["asset"] == "USDT"), {"wallet": 0, "unrealized_pnl": 0, "total": 0})
+        return json_ok_data({
+            "total_wallet": main_asset["wallet"],
+            "unrealized_pnl": main_asset["unrealized_pnl"],
+            "total_equity": main_asset["total"],
+            "assets": assets,
+            "positions": positions,
+        })
+    except Exception as e:
+        return json_err(str(e))
 
 
 @app.route("/")

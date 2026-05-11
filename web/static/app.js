@@ -29,15 +29,22 @@ function fmtFullTime(t) {
 }
 
 function pnlClass(v) {
-  if (v === null || v === undefined) return 'pnl-zero';
-  if (v > 0) return 'pnl-pos';
-  if (v < 0) return 'pnl-neg';
+  const n = Number(v);
+  if (isNaN(n)) return 'pnl-zero';
+  if (n > 0) return 'pnl-pos';
+  if (n < 0) return 'pnl-neg';
   return 'pnl-zero';
 }
 
 function pnlStr(v) {
-  if (v === null || v === undefined) return '-';
-  return (v > 0 ? '+' : '') + v.toFixed(2);
+  const n = Number(v);
+  if (isNaN(n)) return '-';
+  return (n > 0 ? '+' : '') + n.toFixed(2);
+}
+
+function numStr(v, decimals = 2) {
+  const n = Number(v);
+  return isNaN(n) ? '-' : n.toFixed(decimals);
 }
 
 function statusBadge(s) {
@@ -68,15 +75,76 @@ async function renderDashboard() {
   app.innerHTML = '<div class="loading">加载中...</div>';
 
   try {
-    const d = await api('/api/dashboard');
+    const [d, market, account] = await Promise.all([
+      api('/api/dashboard'),
+      api('/api/market'),
+      api('/api/account'),
+    ]);
     const o = d.orders;
     const s = d.strategies;
 
     const a = o.all_time || {};
     const t = o.today || {};
 
+    // 行情数据
+    const ind = market.indicators || {};
+    const pos = market.position || {};
+    const hasPos = pos.side && pos.size > 0;
+
     app.innerHTML = `
-      <div class="row">
+      <div class="section">
+        <div class="section-title">📈 实时行情 <span class="count">BTC/USDT</span></div>
+        <div class="row">
+          <div class="col-4"><div class="stat-card">
+            <div class="label">现货价格</div>
+            <div class="value">$${fmtPrice(market.price)}</div>
+            <div class="sub ${market.change_24h >= 0 ? 'green' : 'red'}">24h ${market.change_24h >= 0 ? '+' : ''}${market.change_24h}%</div>
+          </div></div>
+          <div class="col-4"><div class="stat-card">
+            <div class="label">合约价格</div>
+            <div class="value">$${fmtPrice(market.contract_price)}</div>
+            <div class="sub">信号: ${renderSignal(market.signal)}</div>
+          </div></div>
+          <div class="col-4"><div class="stat-card">
+            <div class="label">账户权益 (USDT)</div>
+            <div class="value ${pnlClass(account.total_equity - account.total_wallet)}">${fmtNum(account.total_equity)}</div>
+            <div class="sub">可用 ${fmtNum(account.total_wallet)} | 未实现盈亏 ${pnlStr(account.unrealized_pnl)}</div>
+          </div></div>
+          <div class="col-4"><div class="stat-card">
+            <div class="label">持仓</div>
+            <div class="value" style="font-size:1rem">${hasPos ? renderSide(pos.side) + ' ' + pos.size.toFixed(3) : '无持仓'}</div>
+            <div class="sub">${hasPos ? '入场 ' + fmtPrice(pos.entry_price) + ' | 浮盈 ' + pnlStr(pos.unrealized_pnl) : '-'}</div>
+          </div></div>
+        </div>
+      </div>
+
+      ${ind.price ? `
+      <div class="row" style="margin-top:8px">
+        <div class="col-4"><div class="stat-card" style="padding:12px 16px">
+          <div class="label">ADX</div>
+          <div class="value" style="font-size:1.2rem">${ind.adx || '-'}</div>
+        </div></div>
+        <div class="col-4"><div class="stat-card" style="padding:12px 16px">
+          <div class="label">BB位置</div>
+          <div class="value" style="font-size:1.2rem">${ind.bb_position || '-'}</div>
+        </div></div>
+        <div class="col-4"><div class="stat-card" style="padding:12px 16px">
+          <div class="label">趋势EMA</div>
+          <div class="value" style="font-size:1.2rem">${ind['趋势ema'] || '-'}</div>
+        </div></div>
+        <div class="col-4"><div class="stat-card" style="padding:12px 16px">
+          <div class="label">持仓限制</div>
+          <div class="value" style="font-size:1.2rem">${ind.uptrend_block === '1' ? '🔴 限制开多' : ind.uptrend_block === '0' ? '🟢 正常' : '-'}</div>
+        </div></div>
+      </div>` : ''}
+
+      ${account.positions && account.positions.length ? `
+      <div class="section">
+        <div class="section-title">📋 当前持仓</div>
+        <div class="table-wrap">${renderPositionTable(account.positions)}</div>
+      </div>` : ''}
+
+      <div class="row" style="margin-top:16px">
         <div class="col-4"><div class="stat-card">
           <div class="label">总交易次数</div>
           <div class="value">${a.total_trades || 0}</div>
@@ -99,7 +167,7 @@ async function renderDashboard() {
         </div></div>
       </div>
 
-      <div class="row" style="margin-top:16px">
+      <div class="row" style="margin-top:8px">
         <div class="col-4"><div class="stat-card">
           <div class="label">最大单笔盈利</div>
           <div class="value green">${pnlStr(a.max_win)}</div>
@@ -131,6 +199,49 @@ async function renderDashboard() {
   } catch (e) {
     app.innerHTML = `<div class="empty">加载失败: ${e.message}</div>`;
   }
+}
+
+function fmtPrice(v) {
+  if (!v) return '-';
+  return Number(v).toLocaleString('en', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+}
+
+function fmtNum(v) {
+  if (v === null || v === undefined) return '-';
+  return Number(v).toFixed(2);
+}
+
+function renderSignal(s) {
+  if (!s) return '<span class="badge badge-gray">未知</span>';
+  if (s.includes('开多')) return '<span class="badge badge-green">🟢 开多</span>';
+  if (s.includes('开空')) return '<span class="badge badge-red">🔴 开空</span>';
+  if (s.includes('观望')) return '<span class="badge badge-gray">⚪ 观望</span>';
+  return `<span class="badge badge-gray">${s}</span>`;
+}
+
+function renderSide(s) {
+  if (!s) return '-';
+  return s === 'LONG' ? '<span class="badge badge-green">多</span>' : '<span class="badge badge-red">空</span>';
+}
+
+function renderPositionTable(positions) {
+  let html = `<table><thead><tr>
+    <th>交易对</th><th>方向</th><th>数量</th><th>入场价</th><th>标记价</th>
+    <th>未实现盈亏</th><th>盈亏%</th>
+  </tr></thead><tbody>`;
+  for (const p of positions) {
+    html += `<tr>
+      <td>${p.symbol || '-'}</td>
+      <td>${renderSide(p.side)}</td>
+      <td>${p.size.toFixed(3)}</td>
+      <td>${fmtPrice(p.entry_price)}</td>
+      <td>${fmtPrice(p.mark_price)}</td>
+      <td class="${pnlClass(p.unrealized_pnl)}">${pnlStr(p.unrealized_pnl)}</td>
+      <td class="${pnlClass(p.pnl_pct)}">${p.pnl_pct >= 0 ? '+' : ''}${p.pnl_pct}%</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  return html;
 }
 
 async function renderOrders() {
