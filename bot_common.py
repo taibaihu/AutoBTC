@@ -22,85 +22,59 @@ def run_cmd(cmd: list, timeout: int = 30) -> str:
 
 
 def quick_analysis() -> str:
-    """快速分析日志，毫秒级返回最新行情摘要"""
-    log_path = BASE_DIR / "main.log"
-    if not log_path.exists():
-        return "⚠️ main.log 不存在"
-    try:
-        lines = subprocess.run(
-            ["tail", "-80", str(log_path)],
-            capture_output=True, text=True, timeout=5,
-        ).stdout.splitlines()
-    except Exception as e:
-        return f"(读取日志失败: {e})"
+    """快速分析日志，读取两个 bot 的最新行情"""
+    logs = [("main.default.log", "LONG"), ("main.short.log", "SHORT")]
+    parts = [f"📊 快速行情", f"━━━━━━━━━━━━━━━"]
+    for log_name, direction in logs:
+        log_path = BASE_DIR / log_name
+        if not log_path.exists():
+            parts.append(f"[{direction}] ⚠️ {log_name} 不存在")
+            continue
+        try:
+            raw = subprocess.run(
+                ["tail", "-40", str(log_path)],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+        except Exception as e:
+            parts.append(f"[{direction}] 读取失败: {e}")
+            continue
 
-    indicators = {}
-    signals = collections.Counter()
-    for line in lines:
-        m = re.search(r'信号: (⚪观望|🟢开多|🔴开空|❌)', line)
-        if m:
-            signals[m.group(1)] += 1
-        for key in ("价格", "bb_position", "adx", "uptrend_block", "cooldown",
-                     "信号", "趋势ema", "成交量", "rsi", "macd", "kdj"):
-            if key not in indicators:
-                m2 = re.search(rf'{re.escape(key)}: (\S+)', line)
-                if m2:
-                    indicators[key] = m2.group(1)
+        price = "?"
+        signal = "?"
+        for line in reversed(raw.splitlines()):
+            m = re.search(r'📊 价格: (\d+)', line)
+            if m and price == "?":
+                price = m.group(1)
+            m = re.search(r'信号: (⚪观望|🟢|🔴)', line)
+            if m and signal == "?":
+                signal = m.group(1)
 
-    price = indicators.get("价格", "?")
-    bb_pos = indicators.get("bb_position", "?")
-    adx = indicators.get("adx", "?")
-    uptrend_block = indicators.get("uptrend_block", "?")
-    cooldown = indicators.get("cooldown", "?")
-    trend_ema = indicators.get("趋势ema", "?")
-    rsi_val = indicators.get("rsi", "?")
-    macd_val = indicators.get("macd", "?")
-    kdj_val = indicators.get("kdj", "?")
+        pos = "无持仓"
+        for line in reversed(raw.splitlines()):
+            m = re.search(r'📌 \[(short|default)\]\s+(.+)', line)
+            if m:
+                pos = m.group(2).strip()
+                break
 
-    if uptrend_block == "1":
-        trend = "多头限制(不开多)"
-    elif uptrend_block == "0" and adx != "?" and float(adx) < 25:
-        trend = "震荡/低波动"
-    else:
-        trend = "正常"
-
-    last_signal = ""
-    for line in reversed(lines):
-        m = re.search(r'信号: (⚪观望|🟢开多|🔴开空|❌)', line)
-        if m:
-            last_signal = m.group(1)
-            break
-
-    suggest = "等待机会"
-    if last_signal == "🟢开多":
-        suggest = "🟢 可开多"
-    elif last_signal == "🔴开空":
-        suggest = "🔴 可开空"
-    elif last_signal == "❌":
-        suggest = "❌ 禁止开仓"
-
-    parts = [
-        f"📊 实时行情分析",
-        f"━━━━━━━━━━━━━━━",
-        f"价格: {price}",
-        f"信号: {last_signal}",
-        f"趋势: {trend}",
-        f"BB位置: {bb_pos} | ADX: {adx}",
-    ]
-    if rsi_val != "?":
-        parts.append(f"RSI: {rsi_val}")
-    if macd_val != "?":
-        parts.append(f"MACD: {macd_val}")
-    if kdj_val != "?":
-        parts.append(f"KDJ: {kdj_val}")
-    parts.extend([
-        f"趋势EMA: {trend_ema}",
-        f"冷却: {cooldown}",
-        f"━━━━━━━━━━━━━━━",
-        f"💡 建议: {suggest}",
-    ])
-    if signals:
-        parts.append(f"近期信号: {dict(signals)}")
+        # extract last indicator line
+        ind = collections.Counter()
+        for line in raw.splitlines():
+            m = re.search(
+                r'📈.*?B:(\S+).*?U:(\S+).*?M:(\S+).*?L:(\S+).*?MACD:(\S+).*?K:(\S+) D:(\S+) J:(\S+)',
+                line,
+            )
+            if m:
+                ind = {
+                    "r15": m.group(1), "bbu": m.group(2),
+                    "bbm": m.group(3), "bbl": m.group(4),
+                    "macd": m.group(5), "k": m.group(6),
+                    "d": m.group(7), "j": m.group(8),
+                }
+        bb_info = f"U:{ind.get('bbu','?')} M:{ind.get('bbm','?')} L:{ind.get('bbl','?')}" if ind else ""
+        parts.append(f"[{direction}] {'🔴' if signal=='🔴' else '🟢' if signal=='🟢' else '⚪'}")
+        parts.append(f"  价格:{price} 信号:{signal} | {bb_info}")
+        parts.append(f"  RSI15:{ind.get('r15','?')} KDJ:{ind.get('k','?')}/{ind.get('d','?')}/{ind.get('j','?')}")
+        parts.append(f"  持仓: {pos}")
     return "\n".join(parts)
 
 
@@ -200,11 +174,10 @@ CMDS = {
 }
 
 FUZZY_CMDS = {
-    "行情": quick_analysis, "分析": quick_analysis, "适合开单": quick_analysis,
-    "开仓": quick_analysis, "信号": quick_analysis, "当前": quick_analysis,
-    "大盘": quick_analysis, "盘面": quick_analysis, "怎么样": quick_analysis,
-    "怎样": quick_analysis, "如何": quick_analysis, "market": quick_analysis,
-    "分析下": quick_analysis, "看看": quick_analysis, "什么情况": quick_analysis,
+    "行情": quick_analysis, "适合开单": quick_analysis,
+    "开仓": quick_analysis, "信号": quick_analysis,
+    "大盘": quick_analysis, "盘面": quick_analysis,
+    "市场": quick_analysis, "market": quick_analysis,
 }
 
 

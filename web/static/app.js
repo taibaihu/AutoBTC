@@ -18,14 +18,14 @@ function fmtTime(t) {
   if (!t) return '-';
   const d = new Date(t);
   const pad = n => String(n).padStart(2, '0');
-  return `${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  return `${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function fmtFullTime(t) {
   if (!t) return '-';
   const d = new Date(t);
   const pad = n => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function pnlClass(v) {
@@ -306,6 +306,96 @@ function applyOrderFilter() {
   const url = '/orders' + (q ? '?' + q : '');
   history.pushState({}, '', url);
   renderOrders();
+}
+
+async function renderPolymarket() {
+  setActiveNav('polymarket');
+  // Clear any existing refresh timer
+  if (window._polyTimer) clearInterval(window._polyTimer);
+  await renderPolymarketContent();
+  // Auto-refresh every 20s
+  window._polyTimer = setInterval(renderPolymarketContent, 20000);
+}
+
+async function renderPolymarketContent() {
+  const app = qs('#app');
+  app.innerHTML = '<div class="loading">加载中...</div>';
+
+  try {
+    const data = await api('/api/polymarket/stats');
+    const s = data.stats || {};
+    const trades = data.trades || [];
+    const balance = data.balance;
+    const initialBalance = data.initial_balance;
+    const profit = data.profit;
+
+    app.innerHTML = `
+      <div class="section">
+        <div class="section-title">🤖 预测机器人实盘总览 <span class="count">Polymarket</span></div>
+        <div class="row">
+          <div class="col-4"><div class="stat-card">
+            <div class="label">当前余额 (USD)</div>
+            <div class="value">${balance !== null && balance !== undefined ? '$' + numStr(balance) : '—'}</div>
+            <div class="sub">本金 $${initialBalance !== null && initialBalance !== undefined ? numStr(initialBalance) : '—'}</div>
+          </div></div>
+          <div class="col-4"><div class="stat-card">
+            <div class="label">净利润</div>
+            <div class="value ${pnlClass(profit)}" style="font-size:1.3rem">${profit !== null && profit !== undefined ? pnlStr(profit) : '—'}</div>
+            <div class="sub">${profit > 0 ? '🟢 盈利中' : profit < 0 ? '🔴 亏损中' : '⚪ 保本'}</div>
+          </div></div>
+          <div class="col-4"><div class="stat-card">
+            <div class="label">总交易单数</div>
+            <div class="value">${s.total_trades}</div>
+            <div class="sub">持仓中 ${s.open_trades} | 已平仓 ${s.closed_trades}</div>
+          </div></div>
+          <div class="col-4"><div class="stat-card">
+            <div class="label">胜率</div>
+            <div class="value blue">${s.win_rate}%</div>
+            <div class="sub">${s.wins}胜 / ${s.losses}负</div>
+          </div></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">📄 交易记录 <span class="count">(${trades.length})</span></div>
+        <div class="table-wrap">${renderPolymarketTable(trades)}</div>
+      </div>
+    `;
+  } catch (e) {
+    app.innerHTML = `<div class="empty">加载失败: ${e.message}</div>`;
+  }
+}
+
+function renderPolymarketTable(trades) {
+  if (!trades || !trades.length) return '<div class="empty">暂无交易记录</div>';
+  let html = `<table>
+    <thead><tr>
+      <th>#</th><th>时间</th><th>币种</th><th>周期</th><th>方向</th>
+      <th>入场价</th><th>出场价</th><th>投入($)</th><th>代币数</th><th>盈亏</th><th>状态</th>
+    </tr></thead><tbody>`;
+  for (const t of trades) {
+    const dir = t.direction === 'UP'
+      ? '<span class="badge badge-green">UP</span>'
+      : '<span class="badge badge-red">DOWN</span>';
+    const statusHtml = t.status === 'OPEN'
+      ? '<span class="badge badge-blue">持仓中</span>'
+      : '<span class="badge badge-gray">已平仓</span>';
+    html += `<tr>
+      <td>${t.id}</td>
+      <td>${fmtTime(t.entry_time)}</td>
+      <td>${t.market_coin || '-'}</td>
+      <td>${t.market_period || '-'}m</td>
+      <td>${dir}</td>
+      <td>${t.entry_price !== null ? Number(t.entry_price).toFixed(4) : '-'}</td>
+      <td>${t.exit_price !== null ? Number(t.exit_price).toFixed(4) : '-'}</td>
+      <td>${t.trade_amount !== null ? Number(t.trade_amount).toFixed(2) : '-'}</td>
+      <td>${t.token_amount !== null ? Number(t.token_amount).toFixed(4) : '-'}</td>
+      <td class="${pnlClass(t.pnl)}">${t.pnl !== null ? pnlStr(t.pnl) : '-'}</td>
+      <td>${statusHtml}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  return html;
 }
 
 async function renderSimOrders() {
@@ -786,6 +876,7 @@ function route() {
   else if (path === '/orders') renderOrders();
   else if (path === '/local-orders') renderLocalOrders();
   else if (path === '/strategies') renderStrategies();
+  else if (path === '/polymarket') renderPolymarket();
   else if (path === '/sim-orders') renderSimOrders();
   else if (/^\/strategy\/(\d+)$/.test(path)) {
     const id = path.match(/^\/strategy\/(\d+)$/)[1];

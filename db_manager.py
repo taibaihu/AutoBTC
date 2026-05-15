@@ -227,6 +227,29 @@ def init_database():
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='本地订单表（开平一条记录）'
     """)
 
+    # polymarket_trades 表（Polymarket预测交易记录）
+    execute("""
+        CREATE TABLE IF NOT EXISTS polymarket_trades (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            market_coin     VARCHAR(10) NOT NULL COMMENT '交易币种: btc/eth/sol/xrp',
+            market_period   VARCHAR(10) NOT NULL COMMENT '周期: 5/15/60/240/1440',
+            direction       VARCHAR(10) NOT NULL COMMENT 'UP/DOWN',
+            entry_price     DECIMAL(10, 4) COMMENT '买入价格',
+            exit_price      DECIMAL(10, 4) COMMENT '卖出价格',
+            entry_order_id  VARCHAR(200) COMMENT '买入订单ID',
+            exit_order_id   VARCHAR(200) COMMENT '卖出订单ID',
+            entry_time      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            exit_time       DATETIME,
+            trade_amount    DECIMAL(10, 2) COMMENT '投入金额(USD)',
+            token_amount    DECIMAL(20, 8) COMMENT '获得代币数量',
+            pnl             DECIMAL(10, 4) COMMENT '盈亏(USD)',
+            status          VARCHAR(20) DEFAULT 'OPEN' COMMENT 'OPEN/CLOSED',
+            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_status (status),
+            INDEX idx_entry_time (entry_time DESC)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Polymarket预测交易记录'
+    """)
+
     logger.info("所有数据库表已就绪")
 
     # 回填历史订单
@@ -758,6 +781,104 @@ def get_analysis_summary(strategy_name: str) -> dict:
         "total_pnl": round(float(row["total_pnl"]), 2),
         "total_volume": round(float(row["total_volume"]), 2),
     }
+
+
+# ── Polymarket 交易记录 ────────────────────────────────────────────
+
+
+def create_polymarket_trade(market_coin: str, market_period: str, direction: str,
+                             entry_price: float, trade_amount: float,
+                             token_amount: float = 0, entry_order_id: str = '') -> Optional[int]:
+    """创建一条 OPEN 的 Polymarket 交易记录"""
+    cur = execute(
+        """INSERT INTO polymarket_trades
+           (market_coin, market_period, direction, entry_price, trade_amount,
+            token_amount, entry_order_id, status)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, 'OPEN')""",
+        (market_coin, market_period, direction, entry_price,
+         trade_amount, token_amount, entry_order_id),
+        db=DB_NAME,
+    )
+    if cur and cur.lastrowid:
+        return cur.lastrowid
+    return None
+
+
+def close_polymarket_trade(trade_id: int, exit_price: float, exit_order_id: str = '') -> Optional[dict]:
+    """按 ID 平仓，自动计算盈亏"""
+    trade = fetch_one(
+        "SELECT * FROM polymarket_trades WHERE id = %s AND status = 'OPEN'",
+        (trade_id,), db=DB_NAME,
+    )
+    if not trade:
+        return None
+
+    token_amt = float(trade['token_amount'] or 0)
+    trade_amt = float(trade['trade_amount'] or 0)
+    pnl = round((exit_price * token_amt) - trade_amt, 4)
+
+    execute(
+        """UPDATE polymarket_trades SET
+           exit_price = %s, exit_order_id = %s, exit_time = NOW(),
+           pnl = %s, status = 'CLOSED'
+           WHERE id = %s""",
+        (exit_price, exit_order_id, pnl, trade_id),
+        db=DB_NAME,
+    )
+    return {"id": trade_id, "pnl": pnl}
+
+
+def close_latest_polymarket_trade(direction: str, exit_price: float,
+                                   exit_order_id: str = '') -> Optional[dict]:
+    """按方向平最新一笔持仓（自动查找最新的 OPEN 记录）"""
+    trade = fetch_one(
+        "SELECT * FROM polymarket_trades WHERE direction = %s AND status = 'OPEN' ORDER BY id DESC LIMIT 1",
+        (direction,), db=DB_NAME,
+    )
+    if not trade:
+        return None
+    return close_polymarket_trade(trade['id'], exit_price, exit_order_id)
+
+
+def get_polymarket_stats() -> dict:
+    """Polymarket 交易统计：总单数/胜率/盈亏/流水（只算 OPEN 和 CLOSED）"""
+    row = fetch_one("""
+        SELECT
+            COUNT(*)                                         AS total_trades,
+            COUNT(CASE WHEN status = 'CLOSED' THEN 1 END)    AS closed_trades,
+            COUNT(CASE WHEN status = 'OPEN' THEN 1 END)      AS open_trades,
+            COUNT(CASE WHEN pnl > 0 THEN 1 END)              AS wins,
+            COUNT(CASE WHEN pnl < 0 THEN 1 END)              AS losses,
+            COALESCE(SUM(pnl), 0)                            AS total_pnl,
+            COALESCE(SUM(trade_amount), 0)                   AS total_volume
+        FROM polymarket_trades
+        WHERE status IN ('OPEN', 'CLOSED')
+    """, db=DB_NAME)
+    if not row:
+        return {"total_trades": 0, "closed_trades": 0, "wins": 0, "losses": 0,
+                "win_rate": 0, "total_pnl": 0, "total_volume": 0}
+
+    total = row["total_trades"] or 0
+    wins = row["wins"] or 0
+    closed = row["closed_trades"] or 0
+    return {
+        "total_trades": total,
+        "closed_trades": closed,
+        "open_trades": row["open_trades"] or 0,
+        "wins": wins,
+        "losses": row["losses"] or 0,
+        "win_rate": round(wins / closed * 100, 1) if closed > 0 else 0,
+        "total_pnl": round(float(row["total_pnl"]), 2),
+        "total_volume": round(float(row["total_volume"]), 2),
+    }
+
+
+def get_polymarket_trades(limit: int = 50, offset: int = 0) -> list[dict]:
+    """查询 Polymarket 交易记录（排除 EXPIRED）"""
+    return fetch_all(
+        "SELECT * FROM polymarket_trades WHERE status IN ('OPEN', 'CLOSED') ORDER BY entry_time DESC LIMIT %s OFFSET %s",
+        (limit, offset), db=DB_NAME,
+    )
 
 
 def insert_strategy_defaults(user_id: str = "default"):

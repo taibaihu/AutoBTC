@@ -156,15 +156,13 @@ class FuturesEngine:
             return None
 
     def cancel_all_orders(self):
-        """撤销当前交易对所有挂单（每条单独处理，一个失败不影响其余的）"""
+        """撤销当前交易对所有挂单（含普通订单和 TP/SL algo 订单）"""
+        # 1) 撤销普通订单
         orders = []
         try:
             orders = self.exchange.fetch_open_orders(self._symbol)
         except Exception as e:
             logger.warning(f"查询挂单异常: {e}")
-            return
-        if not orders:
-            return
         success = 0
         for o in orders:
             try:
@@ -172,7 +170,34 @@ class FuturesEngine:
                 success += 1
             except Exception as e:
                 logger.warning(f"撤销挂单 {o['id']} 失败: {e}")
-        logger.info(f"已撤销 {success}/{len(orders)} 个挂单")
+        if orders:
+            logger.info(f"已撤销 {success}/{len(orders)} 个普通挂单")
+
+        # 2) 撤销 TP/SL algo 订单
+        self._cancel_algo_orders()
+
+    def _cancel_algo_orders(self):
+        """撤销 TP/SL algo 条件订单"""
+        try:
+            algo_list = self.exchange.fapiPrivateGetOpenAlgoOrders()
+        except Exception as e:
+            logger.warning(f"查询 algo 挂单异常: {e}")
+            return
+        if not algo_list:
+            return
+        success = 0
+        for o in algo_list:
+            try:
+                algo_id = o.get("algoId", "")
+                if algo_id:
+                    self.exchange.fapiPrivateDeleteAlgoOrder(
+                        {"symbol": self._symbol.replace("/", ""), "algoId": algo_id}
+                    )
+                    success += 1
+            except Exception as e:
+                logger.warning(f"撤销 algo 订单失败: {e}")
+        if success:
+            logger.info(f"已撤销 {success}/{len(algo_list)} 个 TP/SL 条件订单")
 
     def calc_contract_amount(self, usdt_amount: float, price: float) -> float:
         """计算合约数量 = (USDT金额 × 杠杆) / 当前价"""
@@ -284,7 +309,7 @@ class FuturesEngine:
             return price
 
     def set_tp_sl_long(self, entry_price: float):
-        """开多后挂止盈止损单 (币安侧)"""
+        """开多后挂止盈止损单 — TP用限价挂单, SL用触发市价"""
         qty = self._get_precise_qty()
         tp_price = self._get_precise_price(entry_price * (1 + MIN_PROFIT_RATE))
         sl_price = self._get_precise_price(entry_price * (1 - MAX_LOSS_RATE))
@@ -292,8 +317,8 @@ class FuturesEngine:
         self.cancel_all_orders()
         try:
             self.exchange.create_order(
-                self._symbol, "TAKE_PROFIT_MARKET", "sell", qty, None,
-                {"stopPrice": tp_price, "positionSide": "LONG", "reduceOnly": True},
+                self._symbol, "TAKE_PROFIT_LIMIT", "sell", qty, tp_price,
+                {"stopPrice": tp_price, "positionSide": "LONG"},
             )
             logger.info(f"✅ 多单止盈挂单 {tp_price}")
         except Exception as e:
@@ -301,14 +326,14 @@ class FuturesEngine:
         try:
             self.exchange.create_order(
                 self._symbol, "STOP_MARKET", "sell", qty, None,
-                {"stopPrice": sl_price, "positionSide": "LONG", "reduceOnly": True},
+                {"stopPrice": sl_price, "positionSide": "LONG"},
             )
             logger.info(f"✅ 多单止损挂单 {sl_price}")
         except Exception as e:
             logger.warning(f"止损挂单失败: {e}")
 
     def set_tp_sl_short(self, entry_price: float):
-        """开空后挂止盈止损单 (币安侧)"""
+        """开空后挂止盈止损单 — TP用限价挂单, SL用触发市价"""
         qty = self._get_precise_qty()
         tp_price = self._get_precise_price(entry_price * (1 - MIN_PROFIT_RATE))
         sl_price = self._get_precise_price(entry_price * (1 + MAX_LOSS_RATE))
@@ -316,8 +341,8 @@ class FuturesEngine:
         self.cancel_all_orders()
         try:
             self.exchange.create_order(
-                self._symbol, "TAKE_PROFIT_MARKET", "buy", qty, None,
-                {"stopPrice": tp_price, "positionSide": "SHORT", "reduceOnly": True},
+                self._symbol, "TAKE_PROFIT_LIMIT", "buy", qty, tp_price,
+                {"stopPrice": tp_price, "positionSide": "SHORT"},
             )
             logger.info(f"✅ 空单止盈挂单 {tp_price}")
         except Exception as e:
@@ -325,11 +350,63 @@ class FuturesEngine:
         try:
             self.exchange.create_order(
                 self._symbol, "STOP_MARKET", "buy", qty, None,
-                {"stopPrice": sl_price, "positionSide": "SHORT", "reduceOnly": True},
+                {"stopPrice": sl_price, "positionSide": "SHORT"},
             )
             logger.info(f"✅ 空单止损挂单 {sl_price}")
         except Exception as e:
             logger.warning(f"止损挂单失败: {e}")
+
+    def limit_sell_close(self) -> dict:
+        """限价平多 — best bid挂单, 2s未成交回退市价"""
+        qty = self.get_position_size(self._symbol, "LONG")
+        if qty <= 0:
+            logger.warning("limit_sell_close: 无多头持仓")
+            return {"status": "no_position", "filled": 0}
+        qty = float(self.exchange.amount_to_precision(self._symbol, qty))
+        ticker = self.exchange.fetch_ticker(self._symbol)
+        bid = float(ticker["bid"])
+        try:
+            order = self.exchange.create_order(
+                self._symbol, "LIMIT", "sell", qty, bid,
+                {"positionSide": "LONG", "postOnly": True},
+            )
+            time.sleep(2)
+            fetched = self.exchange.fetch_order(order["id"], self._symbol)
+            filled = float(fetched.get("filled", 0) or 0)
+            if filled >= qty * 0.999:
+                logger.info(f"✅ 限价平多 maker 成交 @ {bid}")
+                return fetched
+            logger.info(f"⏳ 限价平多未成交(已填{filled:.4f}/{qty})，撤单回退市价")
+            self.exchange.cancel_order(order["id"], self._symbol)
+        except Exception as e:
+            logger.warning(f"限价平多异常: {e}")
+        return self.market_sell(self._symbol, 0)
+
+    def limit_buy_close(self) -> dict:
+        """限价平空 — best ask挂单, 2s未成交回退市价"""
+        qty = self.get_position_size(self._symbol, "SHORT")
+        if qty <= 0:
+            logger.warning("limit_buy_close: 无空头持仓")
+            return {"status": "no_position", "filled": 0}
+        qty = float(self.exchange.amount_to_precision(self._symbol, qty))
+        ticker = self.exchange.fetch_ticker(self._symbol)
+        ask = float(ticker["ask"])
+        try:
+            order = self.exchange.create_order(
+                self._symbol, "LIMIT", "buy", qty, ask,
+                {"positionSide": "SHORT", "postOnly": True},
+            )
+            time.sleep(2)
+            fetched = self.exchange.fetch_order(order["id"], self._symbol)
+            filled = float(fetched.get("filled", 0) or 0)
+            if filled >= qty * 0.999:
+                logger.info(f"✅ 限价平空 maker 成交 @ {ask}")
+                return fetched
+            logger.info(f"⏳ 限价平空未成交(已填{filled:.4f}/{qty})，撤单回退市价")
+            self.exchange.cancel_order(order["id"], self._symbol)
+        except Exception as e:
+            logger.warning(f"限价平空异常: {e}")
+        return self.market_buy_cover(self._symbol, 0)
 
     def get_current_price(self, symbol: str) -> float:
         """获取当前实时价格"""

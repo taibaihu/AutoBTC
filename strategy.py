@@ -244,7 +244,7 @@ class FastRangeStrategy(Strategy):
                  bbw_ratio_upper: float = 2.0,
                  bbw_ratio_lower: float = 0.25,
                  max_slope: float = 0.02,
-                 shadow_body_ratio: float = 1.2,
+                 shadow_body_ratio: float = 0.25,
                  max_body_ratio: float = 0.6,
                  buy_zone: float = 0.10,
                  sell_zone: float = 0.95,
@@ -469,22 +469,28 @@ class FastRangeStrategy(Strategy):
         # ── 买入: 前一根K线的低点触及/跌破下轨 + 确认反弹 ──
         #       大方向下跌时不抄底（震荡市 RANGE_IGNORE_TREND_FILTER 时取消此限制）
         if not creeping and (not is_downtrend or (cfg.RANGE_IGNORE_TREND_FILTER and adx_val < self.adx_threshold)):
+            # 直接入场: 当前价格超跌至 -0.25 以下 (无需K线确认)
+            if pos <= -0.25:
+                indicators["direct_entry"] = 1
+                indicators["confirmed_by"] = "超跌直入"
+                self._last_trade_bar = len(df)
+                return BUY, indicators
+
             prev = df.iloc[-2]
             u_prev = float(upper.iloc[-2])
             l_prev = float(lower.iloc[-2])
             prev_low = float(prev["low"])
 
             low_pos = self._bb_position(prev_low, u_prev, l_prev)
-            low_touched_band = low_pos <= self.buy_zone
+            low_touched_band = low_pos <= -0.02
 
             if low_touched_band:
                 indicators["low_pos"] = round(low_pos, 4)
                 indicators["low_touched"] = 1
 
                 shadow_ok = self._has_long_lower_shadow(prev, l_prev)
-                bull_ok = self._is_small_bullish(prev)
-                if shadow_ok or bull_ok:
-                    indicators["confirmed_by"] = "长下影线" if shadow_ok else "小阳线"
+                if shadow_ok:
+                    indicators["confirmed_by"] = "长下影线"
                     self._last_trade_bar = len(df)
                     return BUY, indicators
         elif creeping:
@@ -587,20 +593,26 @@ class FastRangeShortStrategy(FastRangeStrategy):
         elif is_uptrend and not (cfg.RANGE_IGNORE_TREND_FILTER and adx_val < self.adx_threshold):
             indicators["uptrend_block"] = 1
         else:
+            # 直接入场: 当前价格超涨至 1.25 以上 (无需K线确认)
+            if pos >= 1.25:
+                indicators["direct_entry"] = 1
+                indicators["confirmed_by"] = "超涨直入"
+                self._last_trade_bar = len(df)
+                return SELL, indicators
+
             prev = df.iloc[-2]
             u_prev = float(upper.iloc[-2])
             l_prev = float(lower.iloc[-2])
             prev_high = float(prev["high"])
 
             high_pos = self._bb_position(prev_high, u_prev, l_prev)
-            high_touched_band = high_pos >= self.sell_zone
+            high_touched_band = high_pos >= 1.02
 
             if high_touched_band:
                 indicators["high_pos"] = round(high_pos, 4)
                 shadow_ok = self._has_long_upper_shadow(prev, u_prev)
-                bear_ok = self._is_small_bearish(prev)
-                if shadow_ok or bear_ok:
-                    indicators["confirmed_by"] = "长上影线" if shadow_ok else "小阴线"
+                if shadow_ok:
+                    indicators["confirmed_by"] = "长上影线"
                     self._last_trade_bar = len(df)
                     return SELL, indicators
 

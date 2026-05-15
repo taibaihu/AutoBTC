@@ -24,6 +24,8 @@ from db_manager import (
     run_analysis,
     get_analysis,
     get_analysis_summary,
+    get_polymarket_stats,
+    get_polymarket_trades,
 )
 from strategy_manager import list_strategies, load_strategy
 
@@ -33,6 +35,9 @@ import ccxt
 from config import get_proxy_config, CONTRACT_SYMBOL, SYMBOL
 
 app = Flask(__name__)
+
+# Polymarket 本金
+POLYMARKET_INITIAL_BALANCE = float(os.getenv("POLYMARKET_INITIAL_BALANCE", "50"))
 
 
 # ── 工具 ────────────────────────────────────────────────────
@@ -410,6 +415,45 @@ def api_sim_orders():
         return json_err(str(e))
 
 
+# ── Polymarket 预测交易 ─────────────────────────────────────
+
+
+@app.route("/api/polymarket/stats")
+def api_polymarket_stats():
+    """Polymarket 交易统计 + 最近记录 + 当前余额"""
+    try:
+        stats = get_polymarket_stats()
+        trades = get_polymarket_trades(limit=50)
+
+        # Read current balance from bot log
+        balance = None
+        try:
+            log_path = "/root/polymarket-trading-bot/bot.log"
+            if os.path.exists(log_path):
+                result = subprocess.run(
+                    ["tail", "-200", log_path],
+                    capture_output=True, text=True, timeout=5,
+                )
+                for line in reversed(result.stdout.splitlines()):
+                    m = re.search(r'USD:\s*\$?([\d.]+)', line)
+                    if m:
+                        balance = float(m.group(1))
+                        break
+        except Exception:
+            pass
+
+        profit = round(balance - POLYMARKET_INITIAL_BALANCE, 2) if balance is not None else None
+        return json_ok_data({
+            "stats": stats,
+            "trades": trades,
+            "balance": balance,
+            "initial_balance": POLYMARKET_INITIAL_BALANCE,
+            "profit": profit,
+        })
+    except Exception as e:
+        return json_err(str(e))
+
+
 # ── 前端页面 ────────────────────────────────────────────────
 
 
@@ -547,6 +591,10 @@ def index():
 def orders_page():
     return send_from_directory("static", "index.html")
 
+
+@app.route("/polymarket")
+def polymarket_page():
+    return send_from_directory("static", "index.html")
 
 @app.route("/sim-orders")
 def sim_orders_page():

@@ -30,8 +30,8 @@ FIXED_ORDER_QTY = 0.05        # 固定开仓数量 (BTC)
 MAX_POSITION_USDT = 100      # 单次最大仓位 (USDT) — 旧参数，改用 FIXED_ORDER_QTY
 DAILY_LOSS_LIMIT = 50        # 每日最大亏损 (USDT)
 MAX_TRADES_PER_DAY = 20      # 每日最大交易次数
-MIN_PROFIT_RATE = 0.015       # 最小止盈比例 (1.5%)
-MAX_LOSS_RATE = 0.015         # 最大止损比例 (1.5%)
+MIN_PROFIT_RATE = 0.01        # 最小止盈比例 (1%)
+MAX_LOSS_RATE = 0.01          # 最大止损比例 (1%)
 
 # ===== 策略选择 =====
 STRATEGY_NAME = "fast_range"    # 策略名: ma_cross / rsi_revert / fast_range

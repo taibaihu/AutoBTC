@@ -133,6 +133,9 @@ def webhook():
     msg_type = msg.get("message_type", "") or msg.get("msg_type", "")
     content_str = msg.get("content", "{}")
 
+    if sender_id:
+        logger.info(f"👤 sender open_id={sender_id}")
+
     if message_id and msg_type == "text":
         try:
             content = json.loads(content_str)

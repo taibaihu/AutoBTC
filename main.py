@@ -119,14 +119,14 @@ def main(user_id: str = "default"):
         existing = engine.get_position("SHORT")
         if existing:
             risk.open_short(existing["entry_price"])
-            logger.info(f"🔄 同步到现有空仓 | 数量:{existing['size']:.4f} BTC | 入场:{existing['entry_price']:.0f}")
+            logger.info(f"🔄 同步到现有Short | 数量:{existing['size']:.4f} BTC | 入场:{existing['entry_price']:.0f}")
             if not strategy.paper_trading:
                 engine.set_tp_sl_short(existing["entry_price"])
     else:
         existing = engine.get_position("LONG")
         if existing:
             risk.open_position(existing["entry_price"])
-            logger.info(f"🔄 同步到现有多仓 | 数量:{existing['size']:.4f} BTC | 入场:{existing['entry_price']:.0f}")
+            logger.info(f"🔄 同步到现有Long | 数量:{existing['size']:.4f} BTC | 入场:{existing['entry_price']:.0f}")
             if not strategy.paper_trading:
                 engine.set_tp_sl_long(existing["entry_price"])
 
@@ -161,7 +161,7 @@ def main(user_id: str = "default"):
                 tp_dist = tp_price - price
                 sl_dist = price - sl_price
                 logger.info(
-                    f"📌 [{user_id}] 多仓 | "
+                    f"📌 [{user_id}] Long | "
                     f"入场:{entry:.0f} 当前:{price:.0f} {chg:+.2f}% | "
                     f"TP:{tp_price:.0f}(差{tp_dist:+.0f}) SL:{sl_price:.0f}(余{sl_dist:+.0f}) | "
                     f"{'🔔 '+reason if reason else '⏳条件未触及'}"
@@ -170,7 +170,7 @@ def main(user_id: str = "default"):
                     pnl = risk.calc_pnl(price)
                     risk.record_trade(pnl, exit_price=price)
                     engine.cancel_all_orders()
-                    close_label = "多单止盈止损"
+                    close_label = "Long TP/SL"
                     logger.info(f"💰 {reason} | 当前价: {price:.0f} | 盈亏: {pnl:+.2f} ({LEVERAGE}x)")
                     notifier.send(
                         f"<b>{reason}</b>\n"
@@ -179,13 +179,14 @@ def main(user_id: str = "default"):
                         f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)"
                     )
                     if not strategy.paper_trading:
-                        result = engine.market_sell(CONTRACT_SYMBOL, MAX_POSITION_USDT)
-                        save_real_order(result, CONTRACT_SYMBOL, "SELL", "LONG",
-                                        strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
-                        bo_id = result.get("info", result).get("orderId") or result.get("id")
-                        active = get_latest_active_trade("LONG")
-                        if active and bo_id:
-                            close_local_trade(active["id"], bo_id, price, pnl)
+                        result = engine.limit_sell_close()
+                        if float(result.get("filled", 0) or 0) > 0:
+                            save_real_order(result, CONTRACT_SYMBOL, "SELL", "LONG",
+                                            strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
+                            bo_id = result.get("info", result).get("orderId") or result.get("id")
+                            active = get_latest_active_trade("LONG")
+                            if active and bo_id:
+                                close_local_trade(active["id"], bo_id, price, pnl)
                         engine.cancel_all_orders()
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "SELL", "LONG", price,
@@ -202,7 +203,7 @@ def main(user_id: str = "default"):
                 tp_dist = price - tp_price
                 sl_dist = sl_price - price
                 logger.info(
-                    f"📌 [{user_id}] 空仓 | "
+                    f"📌 [{user_id}] Short | "
                     f"入场:{entry:.0f} 当前:{price:.0f} {chg:+.2f}% | "
                     f"TP:{tp_price:.0f}(余{tp_dist:+.0f}) SL:{sl_price:.0f}(差{sl_dist:+.0f}) | "
                     f"{'🔔 '+reason if reason else '⏳条件未触及'}"
@@ -219,13 +220,14 @@ def main(user_id: str = "default"):
                         f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)"
                     )
                     if not strategy.paper_trading:
-                        result = engine.market_buy_cover(CONTRACT_SYMBOL, MAX_POSITION_USDT)
-                        save_real_order(result, CONTRACT_SYMBOL, "BUY", "SHORT",
-                                        strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
-                        bo_id = result.get("info", result).get("orderId") or result.get("id")
-                        active = get_latest_active_trade("SHORT")
-                        if active and bo_id:
-                            close_local_trade(active["id"], bo_id, price, pnl)
+                        result = engine.limit_buy_close()
+                        if float(result.get("filled", 0) or 0) > 0:
+                            save_real_order(result, CONTRACT_SYMBOL, "BUY", "SHORT",
+                                            strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
+                            bo_id = result.get("info", result).get("orderId") or result.get("id")
+                            active = get_latest_active_trade("SHORT")
+                            if active and bo_id:
+                                close_local_trade(active["id"], bo_id, price, pnl)
                         engine.cancel_all_orders()
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "BUY", "SHORT", price,
@@ -234,16 +236,16 @@ def main(user_id: str = "default"):
                     next_trade_time = time.time() + POSITION_COOLDOWN_MINUTES * 60
 
             if not risk.position and not risk.short_position:
-                logger.info(f"📌 [{user_id}] 无持仓")
+                logger.info(f"📌 [{user_id}] No position")
                 # 运行时重同步: risk 显示无持仓但币安有 → 恢复跟踪
                 existing = engine.get_position("SHORT" if is_short_strategy else "LONG")
                 if existing:
                     if is_short_strategy:
                         risk.open_short(existing["entry_price"])
-                        logger.info(f"🔄 运行时同步到空仓 | 入场:{existing['entry_price']:.0f}")
+                        logger.info(f"🔄 运行时同步到Short | 入场:{existing['entry_price']:.0f}")
                     else:
                         risk.open_position(existing["entry_price"])
-                        logger.info(f"🔄 运行时同步到多仓 | 入场:{existing['entry_price']:.0f}")
+                        logger.info(f"🔄 运行时同步到Long | 入场:{existing['entry_price']:.0f}")
                     if not strategy.paper_trading:
                         if is_short_strategy:
                             engine.set_tp_sl_short(existing["entry_price"])
@@ -337,13 +339,14 @@ def main(user_id: str = "default"):
                         f"统计: 今日{risk.trade_count}笔 / 盈亏{risk.daily_pnl:+.2f}"
                     )
                     if not strategy.paper_trading:
-                        result = engine.market_buy_cover(CONTRACT_SYMBOL, MAX_POSITION_USDT)
-                        save_real_order(result, CONTRACT_SYMBOL, "BUY", "SHORT",
-                                        strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
-                        bo_id = result.get("info", result).get("orderId") or result.get("id")
-                        active = get_latest_active_trade("SHORT")
-                        if active and bo_id:
-                            close_local_trade(active["id"], bo_id, price, pnl)
+                        result = engine.limit_buy_close()
+                        if float(result.get("filled", 0) or 0) > 0:
+                            save_real_order(result, CONTRACT_SYMBOL, "BUY", "SHORT",
+                                            strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
+                            bo_id = result.get("info", result).get("orderId") or result.get("id")
+                            active = get_latest_active_trade("SHORT")
+                            if active and bo_id:
+                                close_local_trade(active["id"], bo_id, price, pnl)
                         engine.cancel_all_orders()
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "BUY", "SHORT", price,
@@ -419,13 +422,14 @@ def main(user_id: str = "default"):
                         f"统计: 今日{risk.trade_count}笔 / 盈亏{risk.daily_pnl:+.2f}"
                     )
                     if not strategy.paper_trading:
-                        result = engine.market_sell(CONTRACT_SYMBOL, MAX_POSITION_USDT)
-                        save_real_order(result, CONTRACT_SYMBOL, "SELL", "LONG",
-                                        strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
-                        bo_id = result.get("info", result).get("orderId") or result.get("id")
-                        active = get_latest_active_trade("LONG")
-                        if active and bo_id:
-                            close_local_trade(active["id"], bo_id, price, pnl)
+                        result = engine.limit_sell_close()
+                        if float(result.get("filled", 0) or 0) > 0:
+                            save_real_order(result, CONTRACT_SYMBOL, "SELL", "LONG",
+                                            strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
+                            bo_id = result.get("info", result).get("orderId") or result.get("id")
+                            active = get_latest_active_trade("LONG")
+                            if active and bo_id:
+                                close_local_trade(active["id"], bo_id, price, pnl)
                         engine.cancel_all_orders()
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "SELL", "LONG", price,
