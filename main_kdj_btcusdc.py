@@ -40,7 +40,7 @@ class KDJBot:
         self.strategy = KDJReversalStrategy(
             oversold_k=30, stop_loss_pct=STOP_LOSS_PCT,
             max_hold_candles=24, cooldown_bars=2, k_period=14, d_period=2,
-            vol_filter_pct=0.8, ema_filter=True,
+            vol_filter_pct=0.8, ema_filter=True, ema_period=50,
         )
         self.state = self._load_state()
         self._last_ind = {}
