@@ -43,7 +43,7 @@ STRATEGY_NAME = "fast_range"    # 策略名: ma_cross / rsi_revert / fast_range
 STRATEGY_KWARGS = {"buy_zone": 0.20, "cooldown_bars": 2, "adx_threshold": 38, "max_slope": 0.02}
 
 # KDJ 策略参数
-KDJ_K_PERIOD = 14  # 最优参数
+KDJ_K_PERIOD = 14
 KDJ_D_PERIOD = 2
 KDJ_OVERSOLD_K = 30       # K<30 超卖区金叉才开多
 KDJ_OVERBOUGHT_J = 100    # J>100 平多
@@ -99,3 +99,6 @@ def get_proxy_config() -> Optional[dict]:
         "http": proxy_url,
         "https": proxy_url,
     }
+
+# Trend Filter
+EMA_FILTER_PERIOD = 200
