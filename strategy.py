@@ -633,7 +633,7 @@ class KDJReversalStrategy(Strategy):
                  overbought_j: float = 100, cooldown_bars: int = 2,
 
                  max_hold_candles: int = 12,  # 12根15mK线=3小时平仓
-                 ema_period: int = 50, stop_loss_pct: float = 0.3,
+                 ema_period: int = 100, stop_loss_pct: float = 0.3,
                  vol_filter_pct: float = 1.2,  # 波动率过滤: 4h振幅<此值不开仓
                  ema_filter: bool = True):  # EMA趋势过滤: 价>EMA50才多, 价<EMA50才空
         self.k_period = k_period
@@ -712,18 +712,18 @@ class KDJReversalStrategy(Strategy):
                 indicators["vol_filter_block"] = f"振幅{amp:.2f}%<{self.vol_filter_pct}%"
                 return HOLD, indicators
 
-        # ── EMA50 趋势过滤 ──
-        ema50 = close.ewm(span=self.ema_period, adjust=False).mean()
-        cur_ema50 = float(ema50.iloc[-1])
-        indicators["EMA50"] = round(cur_ema50, 1)
-        above_ema50 = cur_price > cur_ema50
-        indicators["above_ema50"] = above_ema50
+        # ── EMA{self.ema_period} 趋势过滤 ──
+        ema_val = close.ewm(span=self.ema_period, adjust=False).mean()
+        cur_ema = float(ema_val.iloc[-1])
+        indicators[f"EMA{self.ema_period}"] = round(cur_ema, 1)
+        above_ema = cur_price > cur_ema
+        indicators["above_ema"] = above_ema
 
         # ── 开多条件：KDJ金叉 + K<30 + 偏离EMA100>-3%（过滤暴跌假信号）──
         k_golden_cross = prev_k <= prev_d and cur_k > cur_d
 
-        if k_golden_cross and cur_k < self.oversold_k and ema_dev > -100 and (not self.ema_filter or above_ema50):
-            indicators["signal_type"] = "超卖金叉+EMA50"
+        if k_golden_cross and cur_k < self.oversold_k and ema_dev > -100 and (not self.ema_filter or above_ema):
+            indicators["signal_type"] = f"超卖金叉+EMA{self.ema_period}"
             self._entry_price = cur_price
             self._last_trade_bar = df.index[-1]
             return BUY, indicators

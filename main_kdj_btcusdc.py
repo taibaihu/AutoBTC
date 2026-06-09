@@ -181,8 +181,8 @@ class KDJBot:
                         prev_d = float(ind.get("D_prev", 50))
                         death_cross = prev_k >= prev_d and cur_k < cur_d
                         # EMA200过滤: 空头只在价<EMA200时开仓
-                        above_ema50 = ind.get("above_ema50", True)
-                        if death_cross and cur_k > OVERBOUGHT_K and (not above_ema50):
+                        above_ema = ind.get("above_ema", True)
+                        if death_cross and cur_k > OVERBOUGHT_K and (not above_ema):
                             short_signal = True
 
                 # -- 有挂单未成交 --
