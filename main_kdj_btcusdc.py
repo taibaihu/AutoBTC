@@ -22,7 +22,7 @@ LIMIT = 250
 ORDER_QTY = 0.05         # 0.05 BTC / 单
 ENTRY_OFFSET = -50       # 多头: 低于市价$50; 空头: 高于市价$50
 STOP_LOSS_PCT = 0.5      # 止损 ±0.5% (TP/SL对称)
-TAKE_PROFIT_PCT = 0.5    # 止盈 ±0.5% (TP/SL对称)
+TAKE_PROFIT_PCT = 0.8    # 止盈 ±0.8% (建议参数)
 ORDER_TIMEOUT = 1800     # 挂单30分钟未成交自动撤单 (回测最佳)
 CHECK_INTERVAL = 60      # 60秒轮询
 OVERBOUGHT_K = 70        # K>70 超买区死叉 => 开空 (回测最佳)
@@ -38,17 +38,17 @@ class KDJBot:
         })
         self.exchange.load_markets()
         self.strategy = KDJReversalStrategy(
-            oversold_k=25, stop_loss_pct=STOP_LOSS_PCT,
-            max_hold_candles=8, cooldown_bars=2, k_period=7, d_period=2,
+            oversold_k=30, stop_loss_pct=STOP_LOSS_PCT,
+            max_hold_candles=24, cooldown_bars=2, k_period=14, d_period=2,
         )
         self.state = self._load_state()
         self._last_ind = {}
         self._last_trade_time = 0  # 最近一次平仓时间，用于冷却检查
         logger.info(f"KDJ多空对称策略启动: {SYMBOL} 每单{ORDER_QTY}BTC")
-        logger.info(f"  多头: 金叉K<25  -${abs(ENTRY_OFFSET)}挂  TP+{TAKE_PROFIT_PCT}%  SL-{STOP_LOSS_PCT}%")
+        logger.info(f"  多头: 金叉K<{self.strategy.oversold_k}  -\${abs(ENTRY_OFFSET)}挂  TP+{TAKE_PROFIT_PCT}%  SL-{STOP_LOSS_PCT}%")
         logger.info(f"  空头: 死叉K>{OVERBOUGHT_K}  +${abs(ENTRY_OFFSET)}挂  TP+{TAKE_PROFIT_PCT}%  SL+{STOP_LOSS_PCT}%")
-        logger.info(f"  TP/SL对称: 均{TAKE_PROFIT_PCT}% 盈亏比1:1")
-        logger.info(f"  参数: KDJ({self.strategy.k_period},{self.strategy.d_period}) 超时{ORDER_TIMEOUT/60}分挂单/2h持仓 冷却{self.strategy.cooldown_bars}根")
+        logger.info(f"  TP/SL: {TAKE_PROFIT_PCT}%/{STOP_LOSS_PCT}%  盈亏比{TAKE_PROFIT_PCT/STOP_LOSS_PCT:.1f}")
+        logger.info(f"  参数: KDJ({self.strategy.k_period},{self.strategy.d_period}) 超时{ORDER_TIMEOUT/60}分挂单/{self.strategy.max_hold_candles*15//60}h持仓 冷却{self.strategy.cooldown_bars}根")
 
         try:
             self.exchange.set_leverage(100, SYMBOL)
