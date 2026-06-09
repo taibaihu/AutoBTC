@@ -1,0 +1,24 @@
+=== BTC/USDC KDJ Reversal Strategy: Production Config ===
+Generated on: 2026-06-09 14:19:42
+
+[Core Parameters]
+KDJ_K_PERIOD: 14
+KDJ_D_PERIOD: 2
+OVERSOLD_K: 30
+EMA_FILTER: 200 (NEW)
+VOL_THRESHOLD: 0.012 (1.2%)
+TAKE_PROFIT: 0.008 (0.8%)
+STOP_LOSS: 0.005 (0.5%)
+MAX_HOLD_TIME: 2 Hours
+ENTRY_OFFSET: -$50 (Long) / +$50 (Short)
+
+[Backtest Performance Summary (1-Year)]
+Total Return: 134.66%
+Max Drawdown: -8.85%
+Win Rate: 56.95%
+Profit Factor: 1.37
+
+[Status]
+Strategy Logic: Verified (High-Fidelity 1s Resolution + EMA200 Filter)
+Timezone: Beijing (UTC+8)
+GitHub Sync: Ready for push
