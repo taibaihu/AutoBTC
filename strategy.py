@@ -631,9 +631,10 @@ class KDJReversalStrategy(Strategy):
 
     def __init__(self, k_period: int = 9, d_period: int = 2, oversold_k: float = 40,
                  overbought_j: float = 100, cooldown_bars: int = 2,
-                 
+
                  max_hold_candles: int = 12,  # 12根15mK线=3小时平仓
-                 ema_period: int = 100, stop_loss_pct: float = 0.3):
+                 ema_period: int = 100, stop_loss_pct: float = 0.3,
+                 vol_filter_pct: float = 1.2):  # 波动率过滤: 4h振幅<此值不开仓
         self.k_period = k_period
         self.d_period = d_period
         self.oversold_k = oversold_k
@@ -642,6 +643,7 @@ class KDJReversalStrategy(Strategy):
         self.max_hold_candles = max_hold_candles
         self.ema_period = ema_period
         self.stop_loss_pct = stop_loss_pct
+        self.vol_filter_pct = vol_filter_pct
         self._entry_price: Optional[float] = None
         self._last_trade_bar: Optional[pd.Timestamp] = None
 
@@ -699,6 +701,14 @@ class KDJReversalStrategy(Strategy):
         indicators["K_prev"] = round(prev_k, 1)
         indicators["D_prev"] = round(prev_d, 1)
         indicators["EMA100"] = round(cur_ema, 1)
+        
+        # ── 波动率过滤：4小时振幅 < vol_filter_pct 不开仓（剔除死寂行情）──
+        if self.vol_filter_pct > 0:
+            amp = calc_amplitude(df, 16) * 100
+            indicators["amplitude_4h"] = round(amp, 2)
+            if amp < self.vol_filter_pct:
+                indicators["vol_filter_block"] = f"振幅{amp:.2f}%<{self.vol_filter_pct}%"
+                return HOLD, indicators
 
         # ── 开多条件：KDJ金叉 + K<30 + 偏离EMA100>-3%（过滤暴跌假信号）──
         k_golden_cross = prev_k <= prev_d and cur_k > cur_d

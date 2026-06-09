@@ -40,6 +40,7 @@ class KDJBot:
         self.strategy = KDJReversalStrategy(
             oversold_k=30, stop_loss_pct=STOP_LOSS_PCT,
             max_hold_candles=24, cooldown_bars=2, k_period=14, d_period=2,
+            vol_filter_pct=1.2,
         )
         self.state = self._load_state()
         self._last_ind = {}
@@ -172,13 +173,15 @@ class KDJBot:
                 short_signal = False
 
                 if not in_cooldown and ind and "K" in ind and "K_prev" in ind and "D_prev" in ind:
-                    cur_k = float(ind.get("K", 50))
-                    cur_d = float(ind.get("D", 50))
-                    prev_k = float(ind.get("K_prev", 50))
-                    prev_d = float(ind.get("D_prev", 50))
-                    death_cross = prev_k >= prev_d and cur_k < cur_d
-                    if death_cross and cur_k > OVERBOUGHT_K:
-                        short_signal = True
+                    # 波动率过低时不开仓
+                    if not ind.get("vol_filter_block"):
+                        cur_k = float(ind.get("K", 50))
+                        cur_d = float(ind.get("D", 50))
+                        prev_k = float(ind.get("K_prev", 50))
+                        prev_d = float(ind.get("D_prev", 50))
+                        death_cross = prev_k >= prev_d and cur_k < cur_d
+                        if death_cross and cur_k > OVERBOUGHT_K:
+                            short_signal = True
 
                 # -- 有挂单未成交 --
                 if oid and not pos:
@@ -307,7 +310,7 @@ class KDJBot:
                 cur_d = self._last_ind.get("D", "-")
                 cur_j = self._last_ind.get("J", "-")
                 cur_ema_dev = self._last_ind.get("ema_dev_pct", "-")
-                logger.info(f"状态: 持仓={pos} 价格={mark:.0f} K={cur_k} D={cur_d} J={cur_j} EMA偏离={cur_ema_dev}%"
+                logger.info(f"状态: 持仓={pos} 价格={mark:.0f} K={cur_k} D={cur_d} J={cur_j} EMA偏离={cur_ema_dev}% 振幅={ind.get("amplitude_4h","-")}%"
                             f"{' 🔒冷却' if in_cooldown and not pos else ''}")
 
                 time.sleep(CHECK_INTERVAL)
