@@ -21,8 +21,8 @@ TF = "15m"
 LIMIT = 250
 ORDER_QTY = 0.05         # 0.05 BTC / 单
 ENTRY_OFFSET = -50       # 多头: 低于市价$50; 空头: 高于市价$50
-STOP_LOSS_PCT = 0.5      # 止损 ±0.5% (TP/SL对称)
-TAKE_PROFIT_PCT = 0.8    # 止盈 ±0.8% (建议参数)
+STOP_LOSS_PCT = 1.0      # 止损 ±1.0% (最优方案)
+TAKE_PROFIT_PCT = 1.5    # 止盈 ±1.5% (最优方案)
 ORDER_TIMEOUT = 1800     # 挂单30分钟未成交自动撤单 (回测最佳)
 CHECK_INTERVAL = 60      # 60秒轮询
 OVERBOUGHT_K = 70        # K>70 超买区死叉 => 开空 (回测最佳)
@@ -40,7 +40,7 @@ class KDJBot:
         self.strategy = KDJReversalStrategy(
             oversold_k=30, stop_loss_pct=STOP_LOSS_PCT,
             max_hold_candles=24, cooldown_bars=2, k_period=14, d_period=2,
-            vol_filter_pct=1.2, ema_filter=True,
+            vol_filter_pct=0.8, ema_filter=True,
         )
         self.state = self._load_state()
         self._last_ind = {}
