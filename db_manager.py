@@ -250,6 +250,21 @@ def init_database():
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Polymarket预测交易记录'
     """)
 
+    # trend_history 表（趋势打分历史，market_watcher 每分钟记录）
+    execute("""
+        CREATE TABLE IF NOT EXISTS trend_history (
+            id          INT AUTO_INCREMENT PRIMARY KEY,
+            ts          DOUBLE NOT NULL COMMENT 'unix 时间戳',
+            score_5m    INT DEFAULT NULL COMMENT '5分钟打分 0-100',
+            score_15m   INT DEFAULT NULL COMMENT '15分钟打分 0-100',
+            score_1h    INT DEFAULT NULL COMMENT '1小时打分 0-100',
+            price       DECIMAL(20, 2) DEFAULT NULL COMMENT 'BTC现货价格',
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_ts (ts DESC)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='趋势打分历史'
+    """)
+    _add_column_if_not_exists("trend_history", "price", "DECIMAL(20,2) DEFAULT NULL COMMENT 'BTC现货价格' AFTER score_1h")
+
     logger.info("所有数据库表已就绪")
 
     # 回填历史订单
@@ -783,6 +798,278 @@ def get_analysis_summary(strategy_name: str) -> dict:
     }
 
 
+# ── AI 入场数据（contract_rank_entry_20，ll_test数据库） ──────────────
+
+AI_DB = "ll_test"
+
+
+def get_ai_entry_data(limit: int = 50, record_time: Optional[str] = None) -> list[dict]:
+    """从 ll_test.contract_rank_entry_20 查询AI入场评分数据
+    可指定 record_time 查看某个时间点的快照；不指定则返回最新时间点"""
+    if not record_time:
+        latest = get_latest_ai_entry_time()
+        if latest:
+            record_time = latest["record_time"]
+            if hasattr(record_time, 'isoformat'):
+                record_time = record_time.isoformat()
+            else:
+                record_time = str(record_time)
+    return fetch_all(
+        """SELECT id, record_time, coin_name, current_price, chg_24h,
+                  score, grade, suggestion, entry_price_low, entry_price_high,
+                  stop_loss, target_price, created_at
+           FROM contract_rank_entry_20
+           WHERE record_time = %s
+           ORDER BY score DESC
+           LIMIT %s""",
+        (record_time, limit),
+        db=AI_DB,
+    )
+
+
+def get_ai_entry_times() -> list[dict]:
+    """获取所有不同的 record_time，按时间倒序"""
+    return fetch_all(
+        "SELECT DISTINCT record_time FROM contract_rank_entry_20 ORDER BY record_time DESC LIMIT 100",
+        db=AI_DB,
+    )
+
+
+def get_latest_ai_entry_time() -> Optional[dict]:
+    """获取最近一次 AI 入场数据记录时间"""
+    return fetch_one(
+        "SELECT record_time FROM contract_rank_entry_20 ORDER BY record_time DESC LIMIT 1",
+        db=AI_DB,
+    )
+
+
+# ── Binance_top_value 数据 ──────────────────────────────
+
+
+def get_binance_ai_data(limit: int = 50, analysis_time: Optional[str] = None) -> list[dict]:
+    """从 ll_test.Binance_top_value 查询AI评分数据
+    支持按分钟查询（analysis_time 格式: 'YYYY-MM-DD HH:MM'），返回该分钟内所有记录"""
+    if not analysis_time:
+        # 取最新且条数≥5的分钟
+        latest = fetch_one(
+            """SELECT DATE_FORMAT(analysis_time, '%%Y-%%m-%%d %%H:%%i') AS minute_time
+               FROM Binance_top_value
+               WHERE analysis_time >= NOW() - INTERVAL 48 HOUR
+               GROUP BY minute_time
+               HAVING COUNT(*) >= 5
+               ORDER BY minute_time DESC
+               LIMIT 1""",
+            db=AI_DB,
+        )
+        if not latest:
+            # 降级
+            latest = fetch_one(
+                "SELECT DATE_FORMAT(analysis_time, '%%Y-%%m-%%d %%H:%%i') AS minute_time FROM Binance_top_value ORDER BY analysis_time DESC LIMIT 1",
+                db=AI_DB,
+            )
+        if latest:
+            analysis_time = latest["minute_time"]
+
+    # 按分钟范围查询：analysis_time 是 "YYYY-MM-DD HH:MM" 格式
+    if analysis_time and len(analysis_time) == 16:  # 分钟级
+        start_time = analysis_time + ":00"
+        # +1 分钟作为结束边界
+        from datetime import datetime, timedelta
+        dt = datetime.strptime(analysis_time, "%Y-%m-%d %H:%M")
+        end_dt = dt + timedelta(minutes=1)
+        end_time = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        return fetch_all(
+            """SELECT t1.id, t1.symbol, t1.current_price, t1.change_24h, t1.volume_24h,
+                      t1.profit_score, t1.rating, t1.entry_suggestion, t1.callback_points,
+                      t1.stop_loss, t1.target_price, t1.commentary, t1.analysis_time, t1.created_at
+               FROM Binance_top_value t1
+               INNER JOIN (
+                   SELECT symbol, MAX(analysis_time) AS max_time
+                   FROM Binance_top_value
+                   WHERE analysis_time >= %s AND analysis_time < %s
+                   GROUP BY symbol
+               ) t2 ON t1.symbol = t2.symbol AND t1.analysis_time = t2.max_time
+               ORDER BY t1.profit_score DESC
+               LIMIT %s""",
+            (start_time, end_time, limit),
+            db=AI_DB,
+        )
+    else:
+        # 精确时间查询
+        return fetch_all(
+            """SELECT id, symbol, current_price, change_24h, volume_24h,
+                      profit_score, rating, entry_suggestion, callback_points,
+                      stop_loss, target_price, analysis_time, created_at
+               FROM Binance_top_value
+               WHERE analysis_time = %s
+               ORDER BY profit_score DESC
+               LIMIT %s""",
+            (analysis_time, limit),
+            db=AI_DB,
+        )
+
+
+def get_binance_ai_times() -> list[dict]:
+    """获取所有不同的分钟级时间点及记录数（限48小时）"""
+    return fetch_all(
+        """SELECT DATE_FORMAT(analysis_time, '%%Y-%%m-%%d %%H:%%i') AS minute_time,
+                  COUNT(*) AS cnt
+           FROM Binance_top_value
+           WHERE analysis_time >= NOW() - INTERVAL 48 HOUR
+           GROUP BY minute_time
+           ORDER BY minute_time DESC
+           LIMIT 100""",
+        db=AI_DB,
+    )
+
+
+# ── OKX AI 数据 ──────────────────────────────────────────────────
+
+
+def get_okx_ai_data(limit: int = 50, analysis_time: Optional[str] = None) -> list[dict]:
+    """从 ll_test.okx_top_value 查询AI评分数据"""
+    if not analysis_time:
+        latest = fetch_one(
+            """SELECT DATE_FORMAT(analysis_time, '%%Y-%%m-%%d %%H:%%i') AS minute_time
+               FROM okx_top_value
+               WHERE analysis_time >= NOW() - INTERVAL 48 HOUR
+               GROUP BY minute_time
+               HAVING COUNT(*) >= 5
+               ORDER BY minute_time DESC
+               LIMIT 1""",
+            db=AI_DB,
+        )
+        if not latest:
+            latest = fetch_one(
+                "SELECT DATE_FORMAT(analysis_time, '%%Y-%%m-%%d %%H:%%i') AS minute_time FROM okx_top_value WHERE analysis_time >= NOW() - INTERVAL 48 HOUR ORDER BY analysis_time DESC LIMIT 1",
+                db=AI_DB,
+            )
+        if latest:
+            analysis_time = latest["minute_time"]
+
+    if analysis_time and len(analysis_time) == 16:
+        start_time = analysis_time + ":00"
+        from datetime import datetime, timedelta
+        dt = datetime.strptime(analysis_time, "%Y-%m-%d %H:%M")
+        end_dt = dt + timedelta(minutes=1)
+        end_time = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        return fetch_all(
+            """SELECT t1.id, t1.symbol, t1.current_price, t1.change_24h, t1.volume_24h,
+                      t1.profit_score, t1.rating, t1.entry_suggestion, t1.callback_points,
+                      t1.stop_loss, t1.target_price, t1.commentary, t1.analysis_time, t1.created_at
+               FROM okx_top_value t1
+               INNER JOIN (
+                   SELECT symbol, MAX(analysis_time) AS max_time
+                   FROM okx_top_value
+                   WHERE analysis_time >= %s AND analysis_time < %s
+                   GROUP BY symbol
+               ) t2 ON t1.symbol = t2.symbol AND t1.analysis_time = t2.max_time
+               ORDER BY t1.profit_score DESC
+               LIMIT %s""",
+            (start_time, end_time, limit),
+            db=AI_DB,
+        )
+    else:
+        return fetch_all(
+            """SELECT id, symbol, current_price, change_24h, volume_24h,
+                      profit_score, rating, entry_suggestion, callback_points,
+                      stop_loss, target_price, analysis_time, created_at
+               FROM okx_top_value
+               WHERE analysis_time = %s
+               ORDER BY profit_score DESC
+               LIMIT %s""",
+            (analysis_time, limit),
+            db=AI_DB,
+        )
+
+
+def get_okx_ai_times() -> list[dict]:
+    """获取所有不同的分钟级时间点及记录数（限48小时）"""
+    return fetch_all(
+        """SELECT DATE_FORMAT(analysis_time, '%%Y-%%m-%%d %%H:%%i') AS minute_time,
+                  COUNT(*) AS cnt
+           FROM okx_top_value
+           WHERE analysis_time >= NOW() - INTERVAL 48 HOUR
+           GROUP BY minute_time
+           ORDER BY minute_time DESC
+           LIMIT 100""",
+        db=AI_DB,
+    )
+
+
+# ── TradFi 分析数据 ───────────────────────────────────────────────
+
+
+def get_binance_tradfi_data(limit: int = 50, analysis_time: Optional[str] = None) -> list[dict]:
+    """从 ll_test.Binance_tradfi_top_value 查询TradFi评分数据"""
+    if not analysis_time:
+        latest = fetch_one(
+            """SELECT DATE_FORMAT(analysis_time, '%%Y-%%m-%%d %%H:%%i') AS minute_time
+               FROM Binance_tradfi_top_value
+               GROUP BY minute_time
+               HAVING COUNT(*) >= 5
+               ORDER BY minute_time DESC
+               LIMIT 1""",
+            db=AI_DB,
+        )
+        if not latest:
+            latest = fetch_one(
+                "SELECT DATE_FORMAT(analysis_time, '%%Y-%%m-%%d %%H:%%i') AS minute_time FROM Binance_tradfi_top_value ORDER BY analysis_time DESC LIMIT 1",
+                db=AI_DB,
+            )
+        if latest:
+            analysis_time = latest["minute_time"]
+
+    if analysis_time and len(analysis_time) == 16:
+        start_time = analysis_time + ":00"
+        from datetime import datetime, timedelta
+        dt = datetime.strptime(analysis_time, "%Y-%m-%d %H:%M")
+        end_dt = dt + timedelta(minutes=1)
+        end_time = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+        return fetch_all(
+            """SELECT t1.id, t1.symbol, t1.current_price, t1.change_24h, t1.volume_24h,
+                      t1.profit_score, t1.rating, t1.entry_suggestion, t1.callback_points,
+                      t1.stop_loss, t1.target_price, t1.commentary, t1.analysis_time, t1.created_at
+               FROM Binance_tradfi_top_value t1
+               INNER JOIN (
+                   SELECT symbol, MAX(analysis_time) AS max_time
+                   FROM Binance_tradfi_top_value
+                   WHERE analysis_time >= %s AND analysis_time < %s
+                   GROUP BY symbol
+               ) t2 ON t1.symbol = t2.symbol AND t1.analysis_time = t2.max_time
+               ORDER BY t1.profit_score DESC
+               LIMIT %s""",
+            (start_time, end_time, limit),
+            db=AI_DB,
+        )
+    else:
+        return fetch_all(
+            """SELECT id, symbol, current_price, change_24h, volume_24h,
+                      profit_score, rating, entry_suggestion, callback_points,
+                      stop_loss, target_price, analysis_time, created_at
+               FROM Binance_tradfi_top_value
+               WHERE analysis_time = %s
+               ORDER BY profit_score DESC
+               LIMIT %s""",
+            (analysis_time, limit),
+            db=AI_DB,
+        )
+
+
+def get_binance_tradfi_times() -> list[dict]:
+    """获取所有不同的分钟级时间点及记录数（限48小时）"""
+    return fetch_all(
+        """SELECT DATE_FORMAT(analysis_time, '%%Y-%%m-%%d %%H:%%i') AS minute_time,
+                  COUNT(*) AS cnt
+           FROM Binance_tradfi_top_value
+           WHERE analysis_time >= NOW() - INTERVAL 48 HOUR
+           GROUP BY minute_time
+           ORDER BY minute_time DESC
+           LIMIT 100""",
+        db=AI_DB,
+    )
+
+
 # ── Polymarket 交易记录 ────────────────────────────────────────────
 
 
@@ -879,6 +1166,47 @@ def get_polymarket_trades(limit: int = 50, offset: int = 0) -> list[dict]:
         "SELECT * FROM polymarket_trades WHERE status IN ('OPEN', 'CLOSED') ORDER BY entry_time DESC LIMIT %s OFFSET %s",
         (limit, offset), db=DB_NAME,
     )
+
+
+# ── 趋势打分历史 ──────────────────────────────────────────────
+
+MAX_HISTORY_POINTS = 720  # 保留12小时（每分钟一个点）
+
+
+def save_trend_history(ts: float, score_5m: int = None, score_15m: int = None, score_1h: int = None, price: float = None):
+    """写入一条趋势打分记录，并清理超量旧数据"""
+    execute(
+        "INSERT INTO trend_history (ts, score_5m, score_15m, score_1h, price) VALUES (%s, %s, %s, %s, %s)",
+        (ts, score_5m, score_15m, score_1h, price), db=DB_NAME,
+    )
+    # 清理超出保留量的旧数据
+    row = fetch_one("SELECT COUNT(*) AS cnt FROM trend_history", db=DB_NAME)
+    if row and row["cnt"] > MAX_HISTORY_POINTS:
+        execute(
+            """DELETE FROM trend_history
+               WHERE id NOT IN (SELECT id FROM (SELECT id FROM trend_history ORDER BY ts DESC LIMIT %s) t)""",
+            (MAX_HISTORY_POINTS,), db=DB_NAME,
+        )
+
+
+def get_trend_history(limit: int = 720) -> list[dict]:
+    """获取最近 N 条趋势打分记录，按时间正序"""
+    rows = fetch_all(
+        "SELECT ts, score_5m, score_15m, score_1h, price FROM trend_history ORDER BY ts ASC LIMIT %s",
+        (limit,), db=DB_NAME,
+    )
+    result = []
+    for r in rows:
+        result.append({
+            "time": float(r["ts"]),
+            "scores": {
+                "5m": r["score_5m"],
+                "15m": r["score_15m"],
+                "1h": r["score_1h"],
+            },
+            "price": float(r["price"]) if r["price"] is not None else None,
+        })
+    return result
 
 
 def insert_strategy_defaults(user_id: str = "default"):

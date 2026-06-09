@@ -11,6 +11,11 @@ load_dotenv()
 API_KEY = os.getenv("BINANCE_API_KEY", "")
 SECRET_KEY = os.getenv("BINANCE_SECRET_KEY", "")
 
+# ===== OKX API =====
+OKX_API_KEY = os.getenv("OKX_API_KEY", "")
+OKX_SECRET_KEY = os.getenv("OKX_SECRET_KEY", "")
+OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "")
+
 # ===== 交易对 & 参数 =====
 SYMBOL = "BTC/USDT"          # 主交易对（现货）
 CONTRACT_SYMBOL = "BTC/USDT:USDT"  # 合约交易对
@@ -30,12 +35,18 @@ FIXED_ORDER_QTY = 0.05        # 固定开仓数量 (BTC)
 MAX_POSITION_USDT = 100      # 单次最大仓位 (USDT) — 旧参数，改用 FIXED_ORDER_QTY
 DAILY_LOSS_LIMIT = 50        # 每日最大亏损 (USDT)
 MAX_TRADES_PER_DAY = 20      # 每日最大交易次数
-MIN_PROFIT_RATE = 0.01        # 最小止盈比例 (1%)
-MAX_LOSS_RATE = 0.01          # 最大止损比例 (1%)
+MIN_PROFIT_RATE = 0.015       # 最小止盈比例 (1.5%)
+MAX_LOSS_RATE = 0.015         # 最大止损比例 (1.5%)
 
 # ===== 策略选择 =====
 STRATEGY_NAME = "fast_range"    # 策略名: ma_cross / rsi_revert / fast_range
-STRATEGY_KWARGS = {"buy_zone": 0.20, "cooldown_bars": 2, "adx_threshold": 35, "max_slope": 0.02}
+STRATEGY_KWARGS = {"buy_zone": 0.20, "cooldown_bars": 2, "adx_threshold": 38, "max_slope": 0.02}
+
+# KDJ 策略参数
+KDJ_K_PERIOD = 9
+KDJ_D_PERIOD = 3
+KDJ_OVERSOLD_K = 30       # K<30 超卖区金叉才开多
+KDJ_OVERBOUGHT_J = 100    # J>100 平多
 # cooldown_bars: 平仓后等待多少根K线再入场 (15分钟K线, 冷却30分钟=2根)
 # 如需自定义: STRATEGY_KWARGS = {"bb_period":20, "bb_std":2, "trend_ema_period":50}
 

@@ -117,7 +117,7 @@ def check_buy_conditions(df: pd.DataFrame, macd: dict, kdj: dict) -> tuple[bool,
     rejected = []
 
     # ===== 过滤1：波动率过滤（剔除横盘螃蟹市）=====
-    bb_period = 20
+    bb_period = 14
     bb_mid = close.rolling(bb_period).mean()
     bb_std = close.rolling(bb_period).std()
     bb_width = ((bb_mid + 2 * bb_std) - (bb_mid - 2 * bb_std)) / bb_mid
@@ -161,7 +161,7 @@ class Strategy:
     """基类，所有策略继承此"""
     paper_trading = True  # 默认模拟, 子类可覆写为 False 开启实盘
 
-    def generate_signal(self, df: pd.DataFrame) -> tuple[int, dict]:
+    def generate_signal(self, df: pd.DataFrame, df_5m: pd.DataFrame = None) -> tuple[int, dict]:
         raise NotImplementedError
 
 
@@ -172,7 +172,7 @@ class MACrossoverStrategy(Strategy):
         self.short_window = short_window
         self.long_window = long_window
 
-    def generate_signal(self, df: pd.DataFrame) -> tuple[int, dict]:
+    def generate_signal(self, df: pd.DataFrame, df_5m: pd.DataFrame = None) -> tuple[int, dict]:
         # 计算均线
         ma_short = df["close"].rolling(self.short_window).mean()
         ma_long = df["close"].rolling(self.long_window).mean()
@@ -208,7 +208,7 @@ class RSIMeanReversionStrategy(Strategy):
         self.oversold = oversold
         self.overbought = overbought
 
-    def generate_signal(self, df: pd.DataFrame) -> tuple[int, dict]:
+    def generate_signal(self, df: pd.DataFrame, df_5m: pd.DataFrame = None) -> tuple[int, dict]:
         rsi_series = calc_rsi_series(df["close"], self.period)
         indicators = {"rsi": float(rsi_series.iloc[-1])}
 
@@ -256,7 +256,6 @@ class FastRangeStrategy(Strategy):
         self.bb_period = bb_period
         self.bb_std = bb_std
         self.adx_period = adx_period
-        self.adx_threshold = adx_threshold
         self.bbw_ratio_upper = bbw_ratio_upper
         self.bbw_ratio_lower = bbw_ratio_lower
         self.max_slope = max_slope
@@ -270,7 +269,7 @@ class FastRangeStrategy(Strategy):
         self.cooldown_bars = cooldown_bars
         self.sell_shadow_body_ratio = sell_shadow_body_ratio
         self.paper_trading = cfg.PAPER_TRADING
-        self._last_trade_bar = -9999
+        self._last_trade_bar: Optional[pd.Timestamp] = None
 
     # ── 布林带 ──────────────────────────────────────────────
 
@@ -410,7 +409,7 @@ class FastRangeStrategy(Strategy):
 
     # ── 主信号 ────────────────────────────────────────────
 
-    def generate_signal(self, df: pd.DataFrame) -> tuple[int, dict]:
+    def generate_signal(self, df: pd.DataFrame, df_5m: pd.DataFrame = None) -> tuple[int, dict]:
         require = max(self.trend_ema_period, self.adx_period + self.bb_period) + 30
         if len(df) < require:
             return HOLD, {}
@@ -433,7 +432,12 @@ class FastRangeStrategy(Strategy):
             "adx": round(adx_val, 1),
         }
 
-        # 非震荡行情 → 不交易
+        # ── 平多(SELL): 独立于震荡判断，价格到布林上轨即出场 ──
+        if pos >= 0.99:
+            self._last_trade_bar = df.index[-1]
+            return SELL, indicators
+
+        # 非震荡行情 → 不开仓（不影响出场）
         if not self._is_ranging(df, adx=adx_val, bb_result=bb_result):
             indicators["range"] = 0
             return HOLD, indicators
@@ -449,22 +453,12 @@ class FastRangeStrategy(Strategy):
         indicators["downtrend"] = 1 if is_downtrend else 0
 
         # ── 冷却检查：最近交易后等待足够 K 线再入场 ──
-        bars_since_trade = len(df) - self._last_trade_bar
+        bars_since_trade = 9999
+        if self._last_trade_bar is not None:
+            bars_since_trade = (df.index[-1] - self._last_trade_bar).total_seconds() / 60 // 15
         if bars_since_trade < self.cooldown_bars:
-            indicators["cooldown"] = bars_since_trade
+            indicators["cooldown"] = int(bars_since_trade)
             return HOLD, indicators
-
-        # 卖出: 价格触及上轨 + K线反转确认
-        if pos >= self.sell_zone:
-            prev = df.iloc[-2]
-            u_prev = float(upper.iloc[-2])
-            shadow_ok = self._has_long_upper_shadow(prev, u_prev)
-            bear_ok = self._is_small_bearish(prev)
-            if shadow_ok or bear_ok:
-                indicators["confirmed_by"] = "长上影线" if shadow_ok else "小阴线"
-                self._last_trade_bar = len(df)
-                return SELL, indicators
-            indicators["sell_rejected"] = "缺少反转确认"
 
         # ── 买入: 前一根K线的低点触及/跌破下轨 + 确认反弹 ──
         #       大方向下跌时不抄底（震荡市 RANGE_IGNORE_TREND_FILTER 时取消此限制）
@@ -473,7 +467,7 @@ class FastRangeStrategy(Strategy):
             if pos <= -0.25:
                 indicators["direct_entry"] = 1
                 indicators["confirmed_by"] = "超跌直入"
-                self._last_trade_bar = len(df)
+                self._last_trade_bar = df.index[-1]
                 return BUY, indicators
 
             prev = df.iloc[-2]
@@ -491,7 +485,7 @@ class FastRangeStrategy(Strategy):
                 shadow_ok = self._has_long_lower_shadow(prev, l_prev)
                 if shadow_ok:
                     indicators["confirmed_by"] = "长下影线"
-                    self._last_trade_bar = len(df)
+                    self._last_trade_bar = df.index[-1]
                     return BUY, indicators
         elif creeping:
             indicators["creeping"] = 1
@@ -531,7 +525,7 @@ class FastRangeShortStrategy(FastRangeStrategy):
                 return False
         return True
 
-    def generate_signal(self, df: pd.DataFrame) -> tuple[int, dict]:
+    def generate_signal(self, df: pd.DataFrame, df_5m: pd.DataFrame = None) -> tuple[int, dict]:
         require = max(self.trend_ema_period, self.adx_period + self.bb_period) + 30
         if len(df) < require:
             return HOLD, {}
@@ -554,7 +548,12 @@ class FastRangeShortStrategy(FastRangeStrategy):
             "adx": round(adx_val, 1),
         }
 
-        # 非震荡 → 不交易
+        # ── 平空(BUY): 独立于震荡判断，价格到布林下轨即出场 ──
+        if pos <= 0.01:
+            self._last_trade_bar = df.index[-1]
+            return BUY, indicators
+
+        # 非震荡 → 不开仓（不影响出场）
         if not self._is_ranging(df, adx=adx_val, bb_result=bb_result):
             indicators["range"] = 0
             return HOLD, indicators
@@ -569,22 +568,12 @@ class FastRangeShortStrategy(FastRangeStrategy):
         indicators["uptrend"] = 1 if is_uptrend else 0
 
         # ── 冷却检查：与做多策略共享冷却状态 ──
-        bars_since_trade = len(df) - self._last_trade_bar
+        bars_since_trade = 9999
+        if self._last_trade_bar is not None:
+            bars_since_trade = (df.index[-1] - self._last_trade_bar).total_seconds() / 60 // 15
         if bars_since_trade < self.cooldown_bars:
-            indicators["cooldown"] = bars_since_trade
+            indicators["cooldown"] = int(bars_since_trade)
             return HOLD, indicators
-
-        # ── 平空(BUY): 价格触及下轨 + K线反转确认  ──
-        if pos <= self.buy_zone:
-            prev = df.iloc[-2]
-            l_prev = float(lower.iloc[-2])
-            shadow_ok = self._has_long_lower_shadow(prev, l_prev)
-            bull_ok = self._is_small_bullish(prev)
-            if shadow_ok or bull_ok:
-                indicators["confirmed_by"] = "长下影线" if shadow_ok else "小阳线"
-                self._last_trade_bar = len(df)
-                return BUY, indicators
-            indicators["buy_rejected"] = "缺少反转确认"
 
         # ── 开空(SELL): 前一根K线高点触及上轨 + 反转确认 ──
         #       大方向上涨时不开空（震荡市 RANGE_IGNORE_TREND_FILTER 时取消此限制）
@@ -597,7 +586,7 @@ class FastRangeShortStrategy(FastRangeStrategy):
             if pos >= 1.25:
                 indicators["direct_entry"] = 1
                 indicators["confirmed_by"] = "超涨直入"
-                self._last_trade_bar = len(df)
+                self._last_trade_bar = df.index[-1]
                 return SELL, indicators
 
             prev = df.iloc[-2]
@@ -613,8 +602,132 @@ class FastRangeShortStrategy(FastRangeStrategy):
                 shadow_ok = self._has_long_upper_shadow(prev, u_prev)
                 if shadow_ok:
                     indicators["confirmed_by"] = "长上影线"
-                    self._last_trade_bar = len(df)
+                    self._last_trade_bar = df.index[-1]
                     return SELL, indicators
+
+        return HOLD, indicators
+
+
+class KDJReversalStrategy(Strategy):
+    """
+    KDJ 超卖金叉反转策略 — 只做超卖区金叉，避开高位陷阱
+
+    核心逻辑:
+      买入条件: KDJ金叉(K上穿D) + K<30(超卖区) + 距前低不远
+      卖出条件: KDJ死叉或超买区(J>100) 平多
+      胜率: 超卖区金叉约70%，中高位金叉(<40%)大多为陷阱
+
+    适用周期: 15m / 30m / 1h
+    """
+
+    def __init__(self, k_period: int = 9, d_period: int = 2, oversold_k: float = 40,
+                 overbought_j: float = 100, cooldown_bars: int = 2,
+                 
+                 max_hold_candles: int = 12,  # 12根15mK线=3小时平仓
+                 ema_period: int = 100, stop_loss_pct: float = 0.3):
+        self.k_period = k_period
+        self.d_period = d_period
+        self.oversold_k = oversold_k
+        self.overbought_j = overbought_j
+        self.cooldown_bars = cooldown_bars
+        self.max_hold_candles = max_hold_candles
+        self.ema_period = ema_period
+        self.stop_loss_pct = stop_loss_pct
+        self._entry_price: Optional[float] = None
+        self._last_trade_bar: Optional[pd.Timestamp] = None
+
+    def generate_signal(self, df: pd.DataFrame, df_5m: pd.DataFrame = None) -> tuple[int, dict]:
+        require = 200
+        if len(df) < require:
+            return HOLD, {}
+
+        close = df["close"]
+        high = df["high"]
+        low = df["low"]
+
+        # 计算 EMA100（趋势过滤）
+        ema = close.ewm(span=self.ema_period, adjust=False).mean()
+        cur_ema = float(ema.iloc[-1])
+
+        # 计算KDJ
+        low_min = low.rolling(self.k_period).min()
+        high_max = high.rolling(self.k_period).max()
+        rsv = (close - low_min) / (high_max - low_min) * 100
+        rsv = rsv.fillna(50)
+
+        k = rsv.ewm(alpha=1 / self.d_period, adjust=False).mean()
+        d = k.ewm(alpha=1 / self.d_period, adjust=False).mean()
+        j = 3 * k - 2 * d
+
+        cur_k = float(k.iloc[-1])
+        cur_d = float(d.iloc[-1])
+        cur_j = float(j.iloc[-1])
+        prev_k = float(k.iloc[-2])
+        prev_d = float(d.iloc[-2])
+        cur_price = float(close.iloc[-1])
+
+        # 提前计算EMA偏差（确保冷却检查前就有值，用于日志显示）
+        ema_dev = (cur_price / cur_ema - 1) * 100
+
+        indicators = {
+            "K": round(cur_k, 1), "D": round(cur_d, 1), "J": round(cur_j, 1),
+            "K_prev": round(prev_k, 1), "D_prev": round(prev_d, 1),
+        "ema_dev_pct": round(ema_dev, 2),
+        }
+
+        # 冷却检查：交易后等待足够K线
+        bars_since_trade = 9999
+        if self._last_trade_bar is not None:
+            bars_since_trade = (df.index[-1] - self._last_trade_bar).total_seconds() / 60 // 15
+        if bars_since_trade < self.cooldown_bars:
+            indicators["cooldown"] = int(bars_since_trade)
+            return HOLD, indicators
+
+        # ── KDJ值（始终输出，供日志显示）──
+        indicators["K"] = round(cur_k, 1)
+        indicators["D"] = round(cur_d, 1)
+        indicators["J"] = round(cur_j, 1)
+        indicators["K_prev"] = round(prev_k, 1)
+        indicators["D_prev"] = round(prev_d, 1)
+        indicators["EMA100"] = round(cur_ema, 1)
+
+        # ── 开多条件：KDJ金叉 + K<30 + 偏离EMA100>-3%（过滤暴跌假信号）──
+        k_golden_cross = prev_k <= prev_d and cur_k > cur_d
+
+        if k_golden_cross and cur_k < self.oversold_k and ema_dev > -100:
+            indicators["signal_type"] = "超卖金叉+EMA100"
+            self._entry_price = cur_price
+            self._last_trade_bar = df.index[-1]
+            return BUY, indicators
+
+        # ── 止损：亏损达 stop_loss_pct% 立即平仓 ──
+        if self._entry_price is not None and self._entry_price > 0:
+            loss_pct = (cur_price - self._entry_price) / self._entry_price * 100
+            if loss_pct <= -self.stop_loss_pct:
+                indicators["exit_reason"] = f"止损({loss_pct:+.2f}%<=-{self.stop_loss_pct}%)"
+                self._entry_price = None
+                self._last_trade_bar = df.index[-1]
+                return SELL, indicators
+
+        # ── 超时平仓：持有超过3小时（12根15m线）──
+        bars_held = bars_since_trade if self._last_trade_bar is not None else 0
+        if bars_held >= self.max_hold_candles:
+            indicators["exit_reason"] = f"超时平仓(持有{bars_held}根)"
+            self._entry_price = None
+            self._last_trade_bar = df.index[-1]
+            return SELL, indicators
+
+        # ── 平多条件：价格触及布林上轨(14,2) ──
+        bb_period = 14
+        bb_mid = close.rolling(bb_period).mean()
+        bb_std = close.rolling(bb_period).std()
+        bb_upper = bb_mid + 2 * bb_std
+        cur_upper = float(bb_upper.iloc[-1])
+        if cur_price >= cur_upper * 0.995:
+            indicators["exit_reason"] = f"触及布林上轨({cur_price:.0f}>={cur_upper:.0f})"
+            self._entry_price = None
+            self._last_trade_bar = df.index[-1]
+            return SELL, indicators
 
         return HOLD, indicators
 
@@ -625,4 +738,5 @@ STRATEGIES = {
     "rsi_revert": RSIMeanReversionStrategy,
     "fast_range": FastRangeStrategy,
     "fast_range_short": FastRangeShortStrategy,
+    "kdj_reversal": KDJReversalStrategy,
 }

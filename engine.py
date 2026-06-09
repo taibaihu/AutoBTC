@@ -176,13 +176,35 @@ class FuturesEngine:
         # 2) 撤销 TP/SL algo 订单
         self._cancel_algo_orders()
 
-    def _cancel_algo_orders(self):
-        """撤销 TP/SL algo 条件订单"""
+    def get_algo_orders(self) -> list:
+        """获取所有 TP/SL algo 条件订单"""
         try:
-            algo_list = self.exchange.fapiPrivateGetOpenAlgoOrders()
+            return self.exchange.fapiPrivateGetOpenAlgoOrders() or []
         except Exception as e:
             logger.warning(f"查询 algo 挂单异常: {e}")
-            return
+            return []
+
+    def check_tp_sl_algo(self, side: str = "LONG") -> tuple:
+        """
+        检查 algo TP/SL 是否存在
+        返回 (has_tp, has_sl)
+        """
+        algo_list = self.get_algo_orders()
+        has_tp = False
+        has_sl = False
+        for o in algo_list:
+            if o.get("positionSide") != side:
+                continue
+            otype = o.get("orderType", "")
+            if otype == "TAKE_PROFIT_MARKET":
+                has_tp = True
+            elif otype == "STOP_MARKET":
+                has_sl = True
+        return has_tp, has_sl
+
+    def _cancel_algo_orders(self):
+        """撤销 TP/SL algo 条件订单"""
+        algo_list = self.get_algo_orders()
         if not algo_list:
             return
         success = 0
@@ -208,14 +230,17 @@ class FuturesEngine:
 
     def market_buy(self, symbol: str, amount: float) -> dict:
         """市价开多 — 固定 0.05 BTC"""
-        market = self.exchange.market(self._symbol)
-        qty = float(self.exchange.amount_to_precision(self._symbol, self.order_qty))
+        qty = self._get_precise_qty()
         return self.exchange.create_market_buy_order(self._symbol, qty, {"positionSide": "LONG"})
 
     def limit_buy_open(self) -> dict:
         """挂单开多 — post-only limit at best bid, 2s未成交回退市价"""
         ticker = self.exchange.fetch_ticker(self._symbol)
-        bid = float(ticker["bid"])
+        bid = ticker.get("bid")
+        if bid is None:
+            logger.warning(f"挂单开多: ticker.bid 为 None，直接市价开")
+            return self.market_buy(self._symbol, 0)
+        bid = float(bid)
         qty = self._get_precise_qty()
         try:
             order = self.exchange.create_order(
@@ -248,14 +273,17 @@ class FuturesEngine:
 
     def market_sell_short(self, symbol: str, amount: float) -> dict:
         """市价开空 — 固定 0.05 BTC"""
-        market = self.exchange.market(self._symbol)
-        qty = float(self.exchange.amount_to_precision(self._symbol, self.order_qty))
+        qty = self._get_precise_qty()
         return self.exchange.create_market_sell_order(self._symbol, qty, {"positionSide": "SHORT"})
 
     def limit_sell_short_open(self) -> dict:
         """挂单开空 — post-only limit at best ask, 2s未成交回退市价"""
         ticker = self.exchange.fetch_ticker(self._symbol)
-        ask = float(ticker["ask"])
+        ask = ticker.get("ask")
+        if ask is None:
+            logger.warning(f"挂单开空: ticker.ask 为 None，直接市价开")
+            return self.market_sell_short(self._symbol, 0)
+        ask = float(ask)
         qty = self._get_precise_qty()
         try:
             order = self.exchange.create_order(
@@ -309,7 +337,7 @@ class FuturesEngine:
             return price
 
     def set_tp_sl_long(self, entry_price: float):
-        """开多后挂止盈止损单 — TP用限价挂单, SL用触发市价"""
+        """开多后挂止盈止损单 — 1.5% TP/SL, 出场用市价"""
         qty = self._get_precise_qty()
         tp_price = self._get_precise_price(entry_price * (1 + MIN_PROFIT_RATE))
         sl_price = self._get_precise_price(entry_price * (1 - MAX_LOSS_RATE))
@@ -317,7 +345,7 @@ class FuturesEngine:
         self.cancel_all_orders()
         try:
             self.exchange.create_order(
-                self._symbol, "TAKE_PROFIT_LIMIT", "sell", qty, tp_price,
+                self._symbol, "TAKE_PROFIT_MARKET", "sell", qty, None,
                 {"stopPrice": tp_price, "positionSide": "LONG"},
             )
             logger.info(f"✅ 多单止盈挂单 {tp_price}")
@@ -333,7 +361,7 @@ class FuturesEngine:
             logger.warning(f"止损挂单失败: {e}")
 
     def set_tp_sl_short(self, entry_price: float):
-        """开空后挂止盈止损单 — TP用限价挂单, SL用触发市价"""
+        """开空后挂止盈止损单 — 1.5% TP/SL, 出场用市价"""
         qty = self._get_precise_qty()
         tp_price = self._get_precise_price(entry_price * (1 - MIN_PROFIT_RATE))
         sl_price = self._get_precise_price(entry_price * (1 + MAX_LOSS_RATE))
@@ -341,7 +369,7 @@ class FuturesEngine:
         self.cancel_all_orders()
         try:
             self.exchange.create_order(
-                self._symbol, "TAKE_PROFIT_LIMIT", "buy", qty, tp_price,
+                self._symbol, "TAKE_PROFIT_MARKET", "buy", qty, None,
                 {"stopPrice": tp_price, "positionSide": "SHORT"},
             )
             logger.info(f"✅ 空单止盈挂单 {tp_price}")
@@ -364,7 +392,11 @@ class FuturesEngine:
             return {"status": "no_position", "filled": 0}
         qty = float(self.exchange.amount_to_precision(self._symbol, qty))
         ticker = self.exchange.fetch_ticker(self._symbol)
-        bid = float(ticker["bid"])
+        bid = ticker.get("bid")
+        if bid is None:
+            logger.warning(f"限价平多: bid 为 None，直接市价平")
+            return self.market_sell(self._symbol, 0)
+        bid = float(bid)
         try:
             order = self.exchange.create_order(
                 self._symbol, "LIMIT", "sell", qty, bid,
@@ -390,7 +422,11 @@ class FuturesEngine:
             return {"status": "no_position", "filled": 0}
         qty = float(self.exchange.amount_to_precision(self._symbol, qty))
         ticker = self.exchange.fetch_ticker(self._symbol)
-        ask = float(ticker["ask"])
+        ask = ticker.get("ask")
+        if ask is None:
+            logger.warning(f"限价平空: ask 为 None，直接市价平")
+            return self.market_buy_cover(self._symbol, 0)
+        ask = float(ask)
         try:
             order = self.exchange.create_order(
                 self._symbol, "LIMIT", "buy", qty, ask,

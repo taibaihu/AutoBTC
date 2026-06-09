@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """量化交易框架 —— 入口"""
 import argparse
+import os
 import time
 import logging
 from logging.handlers import TimedRotatingFileHandler
@@ -20,7 +21,7 @@ from config import (
 from engine import FuturesEngine, OKXEngine
 from strategy import BUY, SELL, HOLD, STRATEGIES, calc_rsi_series, calc_macd, calc_kdj, calc_bollinger_bands
 from risk_manager import RiskManager
-from db_manager import save_real_order, save_sim_order, create_local_trade, close_local_trade, get_latest_active_trade
+from db_manager import save_real_order, save_sim_order, create_local_trade, close_local_trade, get_latest_active_trade, fetch_all
 from notifier import Notifier
 from strategy_manager import load_strategy, apply_to_config
 
@@ -56,6 +57,34 @@ def check_rsi_alert(rsi_values: dict, last_alert: float, notifier: Notifier) -> 
     logger.info(msg.replace("<b>", "").replace("</b>", ""))
     notifier.send(msg)
     return now
+
+
+# ===== 跨方向冷却 (多空互锁) =====
+COOLDOWN_FILE = os.path.join(os.path.dirname(__file__), ".global_cooldown")
+COOLDOWN_SECONDS = POSITION_COOLDOWN_MINUTES * 60  # 30分钟
+
+
+def set_global_cooldown():
+    """平仓后写入全局冷却时间戳 (多空共享)"""
+    expiry = time.time() + COOLDOWN_SECONDS
+    try:
+        with open(COOLDOWN_FILE, "w") as f:
+            f.write(str(expiry))
+    except Exception:
+        pass
+
+
+def check_global_cooldown() -> tuple[bool, str]:
+    """检查全局冷却，返回 (是否允许开仓, 剩余秒数)"""
+    try:
+        with open(COOLDOWN_FILE, "r") as f:
+            expiry = float(f.read().strip())
+    except (FileNotFoundError, ValueError):
+        return True, 0
+    remaining = int(expiry - time.time())
+    if remaining > 0:
+        return False, remaining
+    return True, 0
 
 
 def setup_logging(user_id: str):
@@ -115,25 +144,57 @@ def main(user_id: str = "default"):
         engine.cancel_all_orders()
 
     # ── 启动时同步币安实际持仓 ──
+    has_long = bool(engine.get_position("LONG"))
+    has_short = bool(engine.get_position("SHORT"))
+
     if is_short_strategy:
-        existing = engine.get_position("SHORT")
-        if existing:
+        if has_short:
+            existing = engine.get_position("SHORT")
             risk.open_short(existing["entry_price"])
             logger.info(f"🔄 同步到现有Short | 数量:{existing['size']:.4f} BTC | 入场:{existing['entry_price']:.0f}")
             if not strategy.paper_trading:
                 engine.set_tp_sl_short(existing["entry_price"])
     else:
-        existing = engine.get_position("LONG")
-        if existing:
+        if has_long:
+            existing = engine.get_position("LONG")
             risk.open_position(existing["entry_price"])
             logger.info(f"🔄 同步到现有Long | 数量:{existing['size']:.4f} BTC | 入场:{existing['entry_price']:.0f}")
             if not strategy.paper_trading:
                 engine.set_tp_sl_long(existing["entry_price"])
 
+    # ── 清理 stale local_trades ──
+    try:
+        stale = fetch_all("SELECT * FROM local_trades WHERE status = '持仓中' ORDER BY id ASC", db=DB_NAME)
+        # 每个方向保留最新的一笔(如果该方向有实际持仓)，其余关掉
+        for direction in ("LONG", "SHORT"):
+            dir_trades = [t for t in stale if t["direction"] == direction]
+            if not dir_trades:
+                continue
+            has_pos = has_long if direction == "LONG" else has_short
+            if has_pos:
+                # 有持仓 → 只保留最新一条，其余全部清理
+                keep = dir_trades[-1]  # 最新的
+                for t in dir_trades[:-1]:
+                    close_local_trade(t["id"], 0, 0, 0, status="已平仓(重启清理)")
+                    logger.warning(f"🧹 清理stale本地订单 #{t['id']} {direction} @ {t['open_price']} — 已过时(保留最新#{keep['id']})")
+            else:
+                # 无持仓 → 该方向所有记录都清理
+                for t in dir_trades:
+                    close_local_trade(t["id"], 0, 0, 0, status="已平仓(重启清理)")
+                    logger.warning(f"🧹 清理stale本地订单 #{t['id']} {direction} @ {t['open_price']} — 币安无对应持仓")
+    except Exception as e:
+        logger.warning(f"清理stale本地订单异常: {e}")
+
     while True:
         try:
             # 1. 获取合约行情
             df = engine.fetch_ohlcv(CONTRACT_SYMBOL, TIMEFRAME, LIMIT)
+            df_5m = None
+            if cfg.strategy_type == "kdj_reversal":
+                try:
+                    df_5m = engine.fetch_ohlcv(CONTRACT_SYMBOL, "5m", 200)
+                except Exception:
+                    pass
             price = float(df["close"].iloc[-1])
 
             # 1b. 获取实时价格对比（合约 vs OKX 现货）
@@ -151,15 +212,19 @@ def main(user_id: str = "default"):
             elif live_binance:
                 logger.info(f"🔥 合约价 B:{live_binance:.0f}  O合约价:获取失败")
 
-            # 2. 持仓检查 —— 止盈/止损（多空独立检查）
+            # 2. 持仓检查 —— 止盈/止损（多空独立检查，出场用市价单）
             if risk.position:
-                reason = risk.should_close(price)
                 entry = risk._entry_price
                 chg = (price - entry) / entry * 100
                 tp_price = entry * (1 + risk.min_profit_rate)
                 sl_price = entry * (1 - risk.max_loss_rate)
                 tp_dist = tp_price - price
                 sl_dist = price - sl_price
+                reason = None
+                if chg >= risk.min_profit_rate * 100:
+                    reason = f"止盈 (+{chg:.2f}%)"
+                elif chg <= -risk.max_loss_rate * 100:
+                    reason = f"止损 ({chg:.2f}%)"
                 logger.info(
                     f"📌 [{user_id}] Long | "
                     f"入场:{entry:.0f} 当前:{price:.0f} {chg:+.2f}% | "
@@ -170,7 +235,6 @@ def main(user_id: str = "default"):
                     pnl = risk.calc_pnl(price)
                     risk.record_trade(pnl, exit_price=price)
                     engine.cancel_all_orders()
-                    close_label = "Long TP/SL"
                     logger.info(f"💰 {reason} | 当前价: {price:.0f} | 盈亏: {pnl:+.2f} ({LEVERAGE}x)")
                     notifier.send(
                         f"<b>{reason}</b>\n"
@@ -179,7 +243,7 @@ def main(user_id: str = "default"):
                         f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)"
                     )
                     if not strategy.paper_trading:
-                        result = engine.limit_sell_close()
+                        result = engine.market_sell(CONTRACT_SYMBOL, 0)
                         if float(result.get("filled", 0) or 0) > 0:
                             save_real_order(result, CONTRACT_SYMBOL, "SELL", "LONG",
                                             strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
@@ -191,17 +255,22 @@ def main(user_id: str = "default"):
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "SELL", "LONG", price,
                                        signal_type="tp_sl", strategy_name=strategy.__class__.__name__,
-                                       msg=f"TP/SL平多 @ {price} | PnL:{pnl:+.2f}")
+                                       msg=f"{reason}平多 @ {price} | PnL:{pnl:+.2f}")
                     next_trade_time = time.time() + POSITION_COOLDOWN_MINUTES * 60
+                    set_global_cooldown()
 
             if risk.short_position:
-                reason = risk.should_close_short(price)
                 entry = risk._short_entry_price
                 chg = (entry - price) / entry * 100
                 tp_price = entry * (1 - risk.min_profit_rate)
                 sl_price = entry * (1 + risk.max_loss_rate)
                 tp_dist = price - tp_price
                 sl_dist = sl_price - price
+                reason = None
+                if chg >= risk.min_profit_rate * 100:
+                    reason = f"止盈 (+{chg:.2f}%)"
+                elif chg <= -risk.max_loss_rate * 100:
+                    reason = f"止损 ({chg:.2f}%)"
                 logger.info(
                     f"📌 [{user_id}] Short | "
                     f"入场:{entry:.0f} 当前:{price:.0f} {chg:+.2f}% | "
@@ -220,7 +289,7 @@ def main(user_id: str = "default"):
                         f"盈亏: {pnl:+.2f} USDT ({LEVERAGE}x)"
                     )
                     if not strategy.paper_trading:
-                        result = engine.limit_buy_close()
+                        result = engine.market_buy_cover(CONTRACT_SYMBOL, 0)
                         if float(result.get("filled", 0) or 0) > 0:
                             save_real_order(result, CONTRACT_SYMBOL, "BUY", "SHORT",
                                             strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
@@ -232,8 +301,9 @@ def main(user_id: str = "default"):
                     else:
                         save_sim_order(CONTRACT_SYMBOL, "BUY", "SHORT", price,
                                        signal_type="tp_sl", strategy_name=strategy.__class__.__name__,
-                                       msg=f"TP/SL平空 @ {price} | PnL:{pnl:+.2f}")
+                                       msg=f"{reason}平空 @ {price} | PnL:{pnl:+.2f}")
                     next_trade_time = time.time() + POSITION_COOLDOWN_MINUTES * 60
+                    set_global_cooldown()
 
             if not risk.position and not risk.short_position:
                 logger.info(f"📌 [{user_id}] No position")
@@ -253,7 +323,7 @@ def main(user_id: str = "default"):
                             engine.set_tp_sl_long(existing["entry_price"])
 
             # 3. 生成信号
-            signal, indicators = strategy.generate_signal(df)
+            signal, indicators = strategy.generate_signal(df, df_5m)
 
             # 日志
             indicator_parts = []
@@ -272,7 +342,10 @@ def main(user_id: str = "default"):
             if is_short_strategy:
                 # ── 做空模式: SELL=开空, BUY=平空 ──
                 if signal == SELL and not risk.short_position:
-                    if time.time() < next_trade_time:
+                    ok, remain = check_global_cooldown()
+                    if not ok:
+                        logger.info(f"⏳ 跨方向冷却中({remain}s)")
+                    elif time.time() < next_trade_time:
                         logger.info(f"⏳ 冷却中({int(next_trade_time - time.time())}s)")
                     else:
                         ok, reason = risk.can_trade()
@@ -339,7 +412,7 @@ def main(user_id: str = "default"):
                         f"统计: 今日{risk.trade_count}笔 / 盈亏{risk.daily_pnl:+.2f}"
                     )
                     if not strategy.paper_trading:
-                        result = engine.limit_buy_close()
+                        result = engine.market_buy_cover(CONTRACT_SYMBOL, 0)
                         if float(result.get("filled", 0) or 0) > 0:
                             save_real_order(result, CONTRACT_SYMBOL, "BUY", "SHORT",
                                             strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
@@ -355,7 +428,10 @@ def main(user_id: str = "default"):
             else:
                 # ── 做多模式: BUY=开多, SELL=平多 ──
                 if signal == BUY and not risk.position:
-                    if time.time() < next_trade_time:
+                    ok, remain = check_global_cooldown()
+                    if not ok:
+                        logger.info(f"⏳ 跨方向冷却中({remain}s)")
+                    elif time.time() < next_trade_time:
                         logger.info(f"⏳ 冷却中({int(next_trade_time - time.time())}s)")
                     else:
                         ok, reason = risk.can_trade()
@@ -422,7 +498,7 @@ def main(user_id: str = "default"):
                         f"统计: 今日{risk.trade_count}笔 / 盈亏{risk.daily_pnl:+.2f}"
                     )
                     if not strategy.paper_trading:
-                        result = engine.limit_sell_close()
+                        result = engine.market_sell(CONTRACT_SYMBOL, 0)
                         if float(result.get("filled", 0) or 0) > 0:
                             save_real_order(result, CONTRACT_SYMBOL, "SELL", "LONG",
                                             strategy.__class__.__name__, LEVERAGE, paper_trading=0, pnl=pnl)
@@ -511,19 +587,9 @@ def main(user_id: str = "default"):
                 _tp_sl_check += 1
                 if _tp_sl_check >= 12:
                     _tp_sl_check = 0
-                    open_orders = engine.exchange.fetch_open_orders(engine._symbol)
                     entry_price = risk._entry_price if risk.position else risk._short_entry_price
                     pos_side = "LONG" if risk.position else "SHORT"
-                    has_tp = any(
-                        o.get("info", {}).get("positionSide") == pos_side
-                        and o.get("type") in ("TAKE_PROFIT_MARKET",)
-                        for o in open_orders
-                    )
-                    has_sl = any(
-                        o.get("info", {}).get("positionSide") == pos_side
-                        and o.get("type") in ("STOP_MARKET",)
-                        for o in open_orders
-                    )
+                    has_tp, has_sl = engine.check_tp_sl_algo(pos_side)
                     if not has_tp or not has_sl:
                         logger.info(f"🔄 {pos_side} TP/SL 挂单丢失，重新挂载")
                         if risk.position:
