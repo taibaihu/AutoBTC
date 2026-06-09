@@ -1902,9 +1902,10 @@ def api_trend_convergence():
 
         # KDJ 策略参数 — 从bot源码读当前配置
         _params = {
-            "k_period": 7, "d_period": 2, "oversold_k": 25, "cooldown_bars": 2,
-            "max_hold_candles": 8, "stop_loss_pct": 0.8,
-            "take_profit_pct": 0.3, "overbought_k": 70, "entry_offset": -50,
+            "k_period": 14, "d_period": 2, "oversold_k": 30, "cooldown_bars": 2,
+            "max_hold_candles": 24, "stop_loss_pct": 0.5,
+            "take_profit_pct": 0.8, "overbought_k": 70, "entry_offset": -50,
+            "vol_filter": 1.2, "ema_period": 50,
             "order_qty": 0.05, "symbol": "BTC/USDC:USDC", "leverage": 1,
         }
         try:
@@ -1912,11 +1913,12 @@ def api_trend_convergence():
             import re as _re2
             for _key in ["k_period", "d_period", "oversold_k", "cooldown_bars",
                           "max_hold_candles", "stop_loss_pct", "take_profit_pct",
-                          "OVERBOUGHT_K", "ENTRY_OFFSET"]:
+                          "OVERBOUGHT_K", "ENTRY_OFFSET", "vol_filter_pct", "ema_period"]:
                 _mo = _re2.search(rf"{_key}\s*=\s*([\d.]+)", bot_src)
                 if _mo:
                     _v = _mo.group(1)
-                    _params[_key.lower().replace("overbought_k","overbought_k").replace("entry_offset","entry_offset")] = float(_v) if "." in _v else int(_v)
+                    key_name = _key.lower().replace("overbought_k","overbought_k").replace("entry_offset","entry_offset").replace("vol_filter_pct", "ema_period","vol_filter")
+                    _params[key_name] = float(_v) if "." in _v else int(_v)
             # 补上overbought_k字段名
             if "OVERBOUGHT_K" in bot_src:
                 _mo = _re2.search(r"OVERBOUGHT_K\s*=\s*(\d+)", bot_src)
@@ -1930,17 +1932,21 @@ def api_trend_convergence():
         conditions_long = [
             {"label": "KDJ金叉 (K上穿D)", "check": "前根K≤D 且 当前K>D"},
             {"label": f"K < {params['oversold_k']}（超卖区）", "check": f"当前K值 < {params['oversold_k']}"},
+            {"label": f"价>EMA{params.get('ema_period',50)}", "check": "仅EMA上方做多"},
             {"label": "限价-$50挂买单", "check": f"低于市价{abs(params['entry_offset'])}U等待成交"},
             {"label": f"止盈 +{params['take_profit_pct']}%", "check": "达到目标价自动平"},
             {"label": f"止损 -{params['stop_loss_pct']}%", "check": "亏损达标自动平"},
+            {"label": f"波动率过滤 >{params.get('vol_filter',1.2)}%", "check": "4小时振幅超过阈值才开仓"},
             {"label": f"最长持有 {params['max_hold_candles']}根 ({params['max_hold_candles']*15//60}h)", "check": "超时市价平仓"},
         ]
         conditions_short = [
             {"label": "KDJ死叉 (K下穿D)", "check": "前根K≥D 且 当前K<D"},
             {"label": f"K > {params['overbought_k']}（超买区）", "check": f"当前K值 > {params['overbought_k']}"},
+            {"label": f"价<EMA{params.get('ema_period',50)}", "check": "仅EMA下方做空"},
             {"label": "限价+$50挂卖单", "check": f"高于市价{abs(params['entry_offset'])}U等待成交"},
             {"label": f"止盈 +{params['take_profit_pct']}%（跌）", "check": "价格下跌达标自动平"},
             {"label": f"止损 +{params['stop_loss_pct']}%（涨）", "check": "价格上涨达标自动平"},
+            {"label": f"波动率过滤 >{params.get('vol_filter',1.2)}%", "check": "4小时振幅超过阈值才开仓"},
             {"label": f"最长持有 {params['max_hold_candles']}根 ({params['max_hold_candles']*15//60}h)", "check": "超时市价平仓"},
         ]
 

@@ -40,7 +40,7 @@ class KDJBot:
         self.strategy = KDJReversalStrategy(
             oversold_k=30, stop_loss_pct=STOP_LOSS_PCT,
             max_hold_candles=24, cooldown_bars=2, k_period=14, d_period=2,
-            vol_filter_pct=1.2, ema200_filter=True,
+            vol_filter_pct=1.2, ema_filter=True,
         )
         self.state = self._load_state()
         self._last_ind = {}
@@ -181,8 +181,8 @@ class KDJBot:
                         prev_d = float(ind.get("D_prev", 50))
                         death_cross = prev_k >= prev_d and cur_k < cur_d
                         # EMA200过滤: 空头只在价<EMA200时开仓
-                        above_ema200 = ind.get("above_ema200", True)
-                        if death_cross and cur_k > OVERBOUGHT_K and (not above_ema200):
+                        above_ema50 = ind.get("above_ema50", True)
+                        if death_cross and cur_k > OVERBOUGHT_K and (not above_ema50):
                             short_signal = True
 
                 # -- 有挂单未成交 --

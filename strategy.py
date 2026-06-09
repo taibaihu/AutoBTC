@@ -633,9 +633,9 @@ class KDJReversalStrategy(Strategy):
                  overbought_j: float = 100, cooldown_bars: int = 2,
 
                  max_hold_candles: int = 12,  # 12根15mK线=3小时平仓
-                 ema_period: int = 100, stop_loss_pct: float = 0.3,
+                 ema_period: int = 50, stop_loss_pct: float = 0.3,
                  vol_filter_pct: float = 1.2,  # 波动率过滤: 4h振幅<此值不开仓
-                 ema200_filter: bool = True):  # EMA200趋势过滤: 价>EMA200才多, 价<EMA200才空
+                 ema_filter: bool = True):  # EMA趋势过滤: 价>EMA50才多, 价<EMA50才空
         self.k_period = k_period
         self.d_period = d_period
         self.oversold_k = oversold_k
@@ -645,7 +645,7 @@ class KDJReversalStrategy(Strategy):
         self.ema_period = ema_period
         self.stop_loss_pct = stop_loss_pct
         self.vol_filter_pct = vol_filter_pct
-        self.ema200_filter = ema200_filter
+        self.ema_filter = ema_filter
         self._entry_price: Optional[float] = None
         self._last_trade_bar: Optional[pd.Timestamp] = None
 
@@ -712,18 +712,18 @@ class KDJReversalStrategy(Strategy):
                 indicators["vol_filter_block"] = f"振幅{amp:.2f}%<{self.vol_filter_pct}%"
                 return HOLD, indicators
 
-        # ── EMA200 趋势过滤 ──
-        ema200 = close.ewm(span=200, adjust=False).mean()
-        cur_ema200 = float(ema200.iloc[-1])
-        indicators["EMA200"] = round(cur_ema200, 1)
-        above_ema200 = cur_price > cur_ema200
-        indicators["above_ema200"] = above_ema200
+        # ── EMA50 趋势过滤 ──
+        ema50 = close.ewm(span=self.ema_period, adjust=False).mean()
+        cur_ema50 = float(ema50.iloc[-1])
+        indicators["EMA50"] = round(cur_ema50, 1)
+        above_ema50 = cur_price > cur_ema50
+        indicators["above_ema50"] = above_ema50
 
         # ── 开多条件：KDJ金叉 + K<30 + 偏离EMA100>-3%（过滤暴跌假信号）──
         k_golden_cross = prev_k <= prev_d and cur_k > cur_d
 
-        if k_golden_cross and cur_k < self.oversold_k and ema_dev > -100 and (not self.ema200_filter or above_ema200):
-            indicators["signal_type"] = "超卖金叉+EMA100" + ("+EMA200" if self.ema200_filter else "")
+        if k_golden_cross and cur_k < self.oversold_k and ema_dev > -100 and (not self.ema_filter or above_ema50):
+            indicators["signal_type"] = "超卖金叉+EMA50"
             self._entry_price = cur_price
             self._last_trade_bar = df.index[-1]
             return BUY, indicators
