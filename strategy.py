@@ -49,6 +49,15 @@ def calc_macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9)
     }
 
 
+
+def calc_amplitude(df: pd.DataFrame, window: int = 16) -> float:
+    """Calculate price amplitude over a window (default 4h for 15m bars)"""
+    if len(df) < window: return 0.0
+    recent = df.tail(window)
+    high = recent['high'].max()
+    low = recent['low'].min()
+    return (high / low) - 1 if low > 0 else 0.0
+
 def calc_kdj(close: pd.Series, high: pd.Series, low: pd.Series, period: int = 9, k_smooth: int = 3, d_smooth: int = 3) -> dict:
     """计算 KDJ 指标，返回当前 K/D/J 值及前后对比"""
     low_min = low.rolling(period).min()

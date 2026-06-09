@@ -28,7 +28,7 @@ SHORT_MA = 7                 # 短期均线周期
 LONG_MA = 25                 # 长期均线周期
 
 # ===== 模拟交易模式（True=只算不买，False=实盘）=====
-PAPER_TRADING = False
+PAPER_TRADING = True
 
 # ===== 风控 =====
 FIXED_ORDER_QTY = 0.05        # 固定开仓数量 (BTC)
@@ -43,8 +43,8 @@ STRATEGY_NAME = "fast_range"    # 策略名: ma_cross / rsi_revert / fast_range
 STRATEGY_KWARGS = {"buy_zone": 0.20, "cooldown_bars": 2, "adx_threshold": 38, "max_slope": 0.02}
 
 # KDJ 策略参数
-KDJ_K_PERIOD = 9
-KDJ_D_PERIOD = 3
+KDJ_K_PERIOD = 14  # 最优参数
+KDJ_D_PERIOD = 2
 KDJ_OVERSOLD_K = 30       # K<30 超卖区金叉才开多
 KDJ_OVERBOUGHT_J = 100    # J>100 平多
 # cooldown_bars: 平仓后等待多少根K线再入场 (15分钟K线, 冷却30分钟=2根)
