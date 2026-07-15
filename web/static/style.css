@@ -1,12 +1,59 @@
+/* ── design tokens ──
+   语义变量。JS 内联样式仍用硬编码 hex（411 处），值与此处保持一致。
+   改主题时先改这里，再逐步替换 JS 内联样式。 */
+:root{
+  /* 背景层级 */
+  --bg:#0d1117;          /* 页面底 */
+  --bg-elev:#161b22;     /* 卡片/nav */
+  --bg-elev-2:#1c2333;   /* hover/悬浮 */
+  --bg-inset:#0d1117;    /* 输入框内嵌 */
+  /* 边框 */
+  --border:#30363d;
+  --border-subtle:#21262d;
+  /* 文字 */
+  --text:#c9d1d9;
+  --text-strong:#f0f6fc;
+  --text-bright:#e6edf3;
+  --text-muted:#8b949e;
+  --text-faint:#484f58;
+  /* 语义色 */
+  --green:#3fb950;
+  --red:#f85149;
+  --yellow:#d29922;
+  --blue:#58a6ff;
+  --orange:#f0883e;
+  --accent:#1f6feb;
+  /* 圆角刻度 */
+  --r-sm:6px;
+  --r-md:8px;
+  --r-lg:10px;
+  /* 阴影（染背景色调，非纯黑） */
+  --shadow-card:0 1px 2px rgba(1,4,9,.4);
+  --shadow-pop:0 8px 24px rgba(1,4,9,.5);
+  /* 动效 */
+  --ease:cubic-bezier(.16,1,.3,1);
+  --dur:.18s;
+  /* 字体 */
+  --font-sans:"Geist","Inter var",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --font-mono:"Geist Mono","SFMono-Regular","Consolas","Liberation Mono",monospace;
+}
+
 /* ── reset & base ── */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html{font-size:14px}
+html{font-size:14px;scroll-behavior:smooth}
 body{
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
-  background:#0d1117;color:#c9d1d9;min-height:100vh
+  font-family:var(--font-sans);
+  background:var(--bg);color:var(--text);min-height:100dvh;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+  font-variant-numeric:tabular-nums;
+  font-feature-settings:"tnum" 1,"cv01" 1
 }
-a{color:#58a6ff;text-decoration:none}
+a{color:var(--blue);text-decoration:none}
 a:hover{text-decoration:underline}
+
+/* ── 键盘无障碍：可见焦点环 ── */
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:4px}
+:focus:not(:focus-visible){outline:none}
 
 /* ── nav ── */
 .nav{
@@ -15,13 +62,13 @@ a:hover{text-decoration:underline}
 }
 .nav-inner{
   max-width:1400px;margin:0 auto;display:flex;align-items:center;
-  padding:0 24px;height:52px;gap:32px
+  padding:0 24px;height:56px;gap:32px
 }
 .nav-brand{font-size:1.15rem;font-weight:700;color:#f0f6fc!important;display:flex;align-items:center;gap:6px}
 .nav-links{display:flex;gap:8px}
 .nav-link{
-  padding:6px 14px;border-radius:6px;color:#8b949e!important;font-size:.93rem;
-  transition:all .15s
+  padding:6px 14px;border-radius:var(--r-sm);color:#8b949e!important;font-size:.93rem;
+  transition:background-color var(--dur) var(--ease),color var(--dur) var(--ease)
 }
 .nav-link:hover,.nav-link.active{background:#1f2937;color:#f0f6fc!important;text-decoration:none}
 .nav-status{margin-left:auto;font-size:.85rem;color:#8b949e}
@@ -38,9 +85,11 @@ a:hover{text-decoration:underline}
   .col-4{min-width:140px}
   .col-3,.col-6{flex:0 0 100%;min-width:0}}
 .stat-card{
-  background:#161b22;border:1px solid #30363d;border-radius:8px;
-  padding:18px 20px;text-align:center
+  background:var(--bg-elev);border:1px solid var(--border);border-radius:var(--r-md);
+  padding:18px 20px;text-align:center;
+  transition:border-color var(--dur) var(--ease),transform var(--dur) var(--ease)
 }
+.stat-card:hover{border-color:#3d444d;transform:translateY(-1px)}
 .stat-card .label{font-size:.82rem;color:#8b949e;margin-bottom:6px}
 .stat-card .value{font-size:1.6rem;font-weight:700;font-variant-numeric:tabular-nums}
 .stat-card .sub{font-size:.82rem;color:#8b949e;margin-top:4px}
@@ -77,6 +126,7 @@ th{
 }
 td{padding:9px 12px;border-bottom:1px solid #21262d;white-space:nowrap}
 tr:last-child td{border-bottom:none}
+tbody tr{transition:background-color var(--dur) var(--ease)}
 tr:hover td{background:#1c2333}
 .clickable{cursor:pointer}
 .clickable:hover{color:#58a6ff}
@@ -84,8 +134,10 @@ tr:hover td{background:#1c2333}
 /* ── status badges ── */
 .badge{
   display:inline-block;padding:2px 8px;border-radius:10px;
-  font-size:.78rem;font-weight:500
+  font-size:.78rem;font-weight:500;
+  transition:opacity var(--dur) var(--ease)
 }
+.badge:hover{opacity:.85}
 .badge-green{background:rgba(63,185,80,.15);color:#3fb950}
 .badge-red{background:rgba(248,81,73,.15);color:#f85149}
 .badge-yellow{background:rgba(210,153,34,.15);color:#d29922}
@@ -197,6 +249,13 @@ tr:hover td{background:#1c2333}
 .okx-btn:hover{filter:brightness(1.15)}
 .okx-btn:active{transform:scale(.97)}
 .okx-btn-sm{padding:4px 10px;font-size:.78rem}
+/* 通用按钮 */
+.btn-sm{padding:5px 14px;font-size:.82rem;border-radius:6px;border:none;cursor:pointer;transition:all .15s;font-family:inherit}
+.btn-sm:active{transform:scale(.97)}
+.btn-primary{background:#1f6feb;color:#fff}
+.btn-primary:hover{filter:brightness(1.15)}
+.btn-secondary{background:#21262d;color:#c9d1d9;border:1px solid #30363d}
+.btn-secondary:hover{background:#30363d}
 .okx-btn-primary{background:#1f6feb;color:#fff}
 .okx-btn-success{background:#238636;color:#fff}
 .okx-btn-danger{background:#da3633;color:#fff}
@@ -205,6 +264,19 @@ tr:hover td{background:#1c2333}
 .okx-results .table-wrap{margin-top:8px}
 
 .mono{font-family:"SFMono-Regular","Consolas","Liberation Mono",monospace;font-variant-numeric:tabular-nums}
+
+/* ── 日期标签页 ── */
+.date-tabs{display:flex;gap:0;margin:0 0 16px;border-bottom:2px solid #30363d;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.date-tabs::-webkit-scrollbar{display:none}
+.date-tab{padding:8px 18px;cursor:pointer;font-size:.9rem;color:#8b949e;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s;white-space:nowrap;flex-shrink:0}
+.date-tab:hover{color:#c9d1d9}
+.date-tab.active{color:#58a6ff;border-bottom-color:#58a6ff;font-weight:600}
+.date-tab .count{margin-left:4px;font-size:.78rem;color:#484f58}
+.date-tab.active .count{color:#58a6ff}
+.date-tab.empty{color:#484f58}
+.date-section-title{font-size:1rem;font-weight:600;margin:16px 0 8px;padding-bottom:6px;border-bottom:1px solid #30363d}
+.date-section-title.today{color:#3fb950}
+.date-section-title.yesterday{color:#d29922}
 
 /* ── AI 入场页面 ── */
 .ai-entry-card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px 20px}
@@ -219,4 +291,77 @@ table td .score-bar{display:inline-flex;align-items:center;gap:6px}
   .nav-link{padding:6px 10px;font-size:.85rem}
   .main{padding:16px}
   .col-4{min-width:140px}
+}
+
+/* ── skeleton loader（骨架屏，替代纯文字"加载中"）──
+   用法: <div class="sk sk-card"></div> 或给 .loading 加 data-skeleton */
+@keyframes sk-shimmer{
+  0%{background-position:-400px 0}
+  100%{background-position:400px 0}
+}
+.sk{
+  background:linear-gradient(90deg,#161b22 0%,#1c2333 40%,#161b22 80%);
+  background-size:400px 100%;
+  border-radius:var(--r-sm);
+  animation:sk-shimmer 1.2s var(--ease) infinite
+}
+.sk-row{height:14px;margin:8px 0}
+.sk-card{height:88px;border-radius:var(--r-md);margin-bottom:12px}
+.sk-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px}
+@media(max-width:768px){.sk-grid{grid-template-columns:repeat(2,1fr)}}
+
+/* ── modal 进出动画 ── */
+.modal-overlay{transition:opacity var(--dur) var(--ease)}
+.modal{
+  animation:modal-in .22s var(--ease);
+  box-shadow:var(--shadow-pop)
+}
+@keyframes modal-in{
+  from{opacity:0;transform:translateY(8px) scale(.98)}
+  to{opacity:1;transform:none}
+}
+
+/* ── skip-link（键盘用户跳转主内容）── */
+.skip-link{
+  position:absolute;left:-9999px;top:0;z-index:300;
+  background:var(--accent);color:#fff;padding:8px 16px;border-radius:0 0 var(--r-sm) 0;
+  font-size:.88rem
+}
+.skip-link:focus{left:0;text-decoration:none}
+
+/* ── 按钮统一按压反馈 ── */
+.okx-btn:active,.btn-sm:active,.btn-primary:active,.btn-secondary:active{
+  transform:translateY(1px)
+}
+
+/* ── utility classes（从 JS 内联样式迁移，逐步替换 411 处 style=""）──
+   命名 u-* 前缀避免与语义类冲突。颜色复用 :root token 与 .green/.red/.yellow */
+.u-muted{color:var(--text-muted)!important}
+.u-faint{color:var(--text-faint)!important}
+.u-orange{color:var(--orange)!important}
+.u-fw6{font-weight:600!important}
+.u-fw7{font-weight:700!important}
+.u-link{color:var(--blue);text-decoration:none!important}
+/* 字号 utility 用 !important：匹配原内联 style 的最高优先级，
+   否则会被 .stat-card .value（0,2,0）等复合选择器覆盖 */
+.u-fs1{font-size:1rem!important}
+.u-fs11{font-size:1.1rem!important}
+.u-fs115{font-size:1.15rem!important}
+/* meta 文本组合（灰字 + 常用字号） */
+.u-meta{color:var(--text-muted)!important;font-size:.85rem!important}
+.u-meta-sm{color:var(--text-muted)!important;font-size:.82rem!important}
+.u-meta-xs{color:var(--text-muted)!important;font-size:.68rem!important}
+.u-meta-78{color:var(--text-muted)!important;font-size:.78rem!important}
+.u-meta-72{color:var(--text-muted)!important;font-size:.72rem!important}
+.u-meta-7{color:var(--text-muted)!important;font-size:.7rem!important;margin-bottom:2px}
+
+/* ── prefers-reduced-motion：关闭所有动效 ── */
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    animation-duration:.001ms!important;
+    animation-iteration-count:1!important;
+    transition-duration:.001ms!important;
+    scroll-behavior:auto!important
+  }
+  .stat-card:hover{transform:none}
 }

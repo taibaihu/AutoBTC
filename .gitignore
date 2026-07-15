@@ -4,21 +4,7 @@
 # 日志文件
 *.log
 
-# Python 缓存
+*.bak
+*.docx
+node_modules/
 __pycache__/
-*.pyc
-*.pyo
-
-# 数据库文件
-*.db
-*.sqlite
-
-# 系统文件
-.DS_Store
-Thumbs.db
-
-# 编辑器
-.vscode/
-.idea/
-*.swp
-*.swo

@@ -3,25 +3,31 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="量化交易实时监控仪表盘 - 行情、策略、AI 评分、多账户管理">
 <title>量化交易仪表盘</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans@latest/index.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/geist-mono@latest/index.css">
+<link rel="stylesheet" href="/static/style.css?v=2">
 </head>
 <body>
+<a class="skip-link" href="#app">跳到主内容</a>
 <nav class="nav">
   <div class="nav-inner">
     <a class="nav-brand" href="/">📊 量化交易</a>
     <div class="nav-links">
       <a href="/" class="nav-link" data-page="dashboard">仪表盘</a>
-      <a href="/trend-score-page" class="nav-link" data-page="trend-score">趋势打分</a>
-      <a href="/trend-convergence" class="nav-link" data-page="trend-conv">KDJ策略</a>
-      <a href="/binance-ai" class="nav-link" data-page="binance-ai">Binance_AI</a>
-      <a href="/tradfi-ai" class="nav-link" data-page="tradfi-ai">📈 TradFi_AI</a>
-      <a href="/okx-ai" class="nav-link" data-page="okx-ai">OK_AI</a>
-      <a href="/okx-danger" class="nav-link" data-page="okx-danger">⚠️ Danger(OKX)</a>
-      <a href="/binance-danger" class="nav-link" data-page="binance-danger">⚠️ Danger(Binance)</a>
-      <a href="/okx" class="nav-link" data-page="okx">🔑 OKX</a>
-      <a href="/usdc" class="nav-link" data-page="usdc">USDC</a>
+      <a href="/bb-ride" class="nav-link" data-page="bb-ride">📊 扫描</a>
+      <a href="/bb-ride-exec-dashboard" class="nav-link" data-page="bb-ride-exec-dash">🏍️ 骑行</a>
+      <a href="/push-retest-dashboard" class="nav-link" data-page="push-retest">🚜 推土机</a>
+      <a href="/bb-ride-exec" class="nav-link" data-page="bb-ride-exec">⚡ 执行</a>
       <a href="/strategies" class="nav-link" data-page="strategies">策略</a>
+      <a href="/trend-score-page" class="nav-link" data-page="trend-score">趋势打分</a>
+      <a href="/ai-analysis" class="nav-link" data-page="ai-analysis">🤖 AI分析</a>
+      <a href="/okx" class="nav-link" data-page="okx">🔑 OKX</a>
+      <a href="/trend-convergence" class="nav-link" data-page="trend-conv">KDJ</a>
+      <a href="/binance-ai" class="nav-link" data-page="binance-ai">Binance_AI</a>
+      <a href="/okx-ai" class="nav-link" data-page="okx-ai">OK_AI</a>
     </div>
     <span class="nav-status" id="navStatus">● 运行中</span>
   </div>
@@ -43,6 +49,6 @@
 
 <script src="/static/chart.umd.min.js"></script>
 <script src="/static/chartjs-plugin-zoom.min.js"></script>
-<script src="/static/app.v30.js?v=6"></script>
+<script src="/static/app.v30.js?v=83"></script>
 </body>
 </html>
