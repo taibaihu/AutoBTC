@@ -69,176 +69,204 @@ function setActiveNav(page) {
 
 // ── pages ──────────────────────────────────────────────────
 
+function buildBtcAnalysis(market, trend, kdjData) {
+  var price = market ? market.price : 0;
+  var chg = market ? (market.change_24h || 0) : 0;
+  var sentiment = "--", sentimentColor = "var(--text-muted)";
+  var summaryLines = [];
+  var tfScores = [];
+  var totalScore = 0, scoreCount = 0;
+
+  if (trend && trend.timeframes) {
+    var tfList = Object.entries(trend.timeframes);
+    for (var ti = 0; ti < tfList.length; ti++) {
+      var pair = tfList[ti];
+      var tf = pair[0], data = pair[1];
+      var d = data.detail || {};
+      tfScores.push(tf + ": " + data.score + "分");
+      totalScore += data.score;
+      scoreCount++;
+    }
+    if (scoreCount > 0) {
+      var avgScore = Math.round(totalScore / scoreCount);
+      if (avgScore >= 65) { sentiment = "🟢 偏乐观"; sentimentColor = "var(--green)"; }
+      else if (avgScore >= 40) { sentiment = "🟡 中性震荡"; sentimentColor = "#d29922"; }
+      else { sentiment = "🔴 偏悲观"; sentimentColor = "var(--red)"; }
+
+      // 生成详细总结
+      if (scoreCount >= 3) {
+        var p5 = trend.timeframes["5m"], p15 = trend.timeframes["15m"], p1h = trend.timeframes["1h"];
+        summaryLines.push("多周期趋势评分 — 5m:" + p5.score + "/15m:" + p15.score + "/1h:" + p1h.score);
+        // 趋势一致性
+        var bullCount = (p5.score >= 50 ? 1 : 0) + (p15.score >= 50 ? 1 : 0) + (p1h.score >= 50 ? 1 : 0);
+        var bearCount = (p5.score < 40 ? 1 : 0) + (p15.score < 40 ? 1 : 0) + (p1h.score < 40 ? 1 : 0);
+        if (bullCount >= 2) summaryLines.push("趋势方向: 多头占优，均线" + (avgScore >= 60 ? "多头排列" : "震荡偏多"));
+        else if (bearCount >= 2) summaryLines.push("趋势方向: 空头占优，注意回调风险");
+        else summaryLines.push("趋势方向: 多空博弈，方向不明");
+
+        // 细项分析
+        var ema1h = p1h.detail.s_ema || 50;
+        var mom1h = p1h.detail.s_mom || 50;
+        var macd1h = p1h.detail.macd_hist || 0;
+        summaryLines.push("EMA趋势力度" + (ema1h >= 70 ? "强劲(↑" + ema1h + ")" : ema1h >= 50 ? "温和(" + ema1h + ")" : "偏弱(" + ema1h + ")"));
+        summaryLines.push("动量" + (mom1h >= 60 ? "偏强(↑" + mom1h + ") 有上攻动能" : mom1h >= 40 ? "中性(" + mom1h + ") 观望" : "减弱(↓" + mom1h + ") 需警惕"));
+        summaryLines.push("MACD柱" + (macd1h > 0 ? "正值(↑" + macd1h.toFixed(1) + ") 多头发散" : "负值(↓" + Math.abs(macd1h).toFixed(1) + ") 空头压力"));
+
+        // BB位置
+        var bb5 = p5.detail.bb_pos || 0.5;
+        var bbPosText = bb5 >= 0.8 ? "上轨附近 ⚠️偏高" : bb5 >= 0.3 ? "中轨区域" : "下轨附近 偏低";
+        summaryLines.push("布林位置: " + bbPosText + " (5m: " + (bb5 * 100).toFixed(0) + "%)");
+
+        // RSI
+        var rsi5 = p5.detail.rsi || 50;
+        var rsi1h = p1h.detail.rsi || 50;
+        summaryLines.push("RSI: 5m=" + rsi5.toFixed(1) + " 1h=" + rsi1h.toFixed(1) + (rsi1h > 70 ? " ⚠️超买区" : rsi1h < 30 ? " ⚠️超卖区" : " 正常区间"));
+      }
+    }
+  }
+
+  if (kdjData) {
+    summaryLines.push("KDJ: K=" + kdjData.k.toFixed(1) + " D=" + kdjData.d.toFixed(1) + " J=" + kdjData.j.toFixed(1) +
+      (kdjData.golden_cross ? " 🟢金叉信号" : kdjData.death_cross ? " 🔴死叉信号" : ""));
+  }
+
+  var chgStr = (chg >= 0 ? "+" : "") + chg + "%";
+  var chgColor = chg >= 0 ? "var(--green)" : "var(--red)";
+  summaryLines.unshift('24h涨跌: <span style="color:' + chgColor + '">' + chgStr + '</span> | 当前 $' + (price ? fmtPrice(price) : '-'));
+
+  if (summaryLines.length === 0) summaryLines.push("等待行情数据更新...");
+
+  // 转为平铺描述，用分隔符连接
+  var flatText = "";
+  if (summaryLines.length > 0) {
+    for (var si = 0; si < summaryLines.length; si++) {
+      if (si > 0 && si % 2 === 0) flatText += '<span class="btc-sep">|</span>';
+      flatText += '<span>' + summaryLines[si] + '</span>';
+    }
+  } else {
+    flatText = '<span>等待行情数据更新...</span>';
+  }
+
+  return {
+    sentiment: sentiment,
+    sentimentColor: sentimentColor,
+    scoreText: tfScores.length ? tfScores.join(" | ") : "---",
+    text: flatText
+  };
+}
+
 async function renderDashboard() {
   setActiveNav('dashboard');
   const app = qs('#app');
   app.innerHTML = '<div class="loading">加载中...</div>';
 
   try {
-    const [d, market, account, lt, trend, baOrders, okxOrders, kdjData] = await Promise.all([
-      api('/api/dashboard'),
+    const [market, account, baOrders, trend, kdjData, bbExec, bbStats, prExec, prScan, prBal] = await Promise.all([
       api('/api/market'),
       api('/api/account'),
-      api('/api/local-trades?limit=20'),
-      api('/api/trend-score').catch(() => null),
       api('/api/binance-ai/orders').catch(() => null),
-      api('/api/okx-ai/orders').catch(() => null),
+      api('/api/trend-score').catch(() => null),
       api('/api/kdj-monitor').catch(() => null),
+      api('/api/bb-ride-execution'),
+      api('/api/bb-ride-execution/stats'),
+      api('/api/bb-ride-execution/push-retest'),
+      api('/api/bb-ride/push-retest').catch(() => null),
+      api('/api/push-retest/balance').catch(() => null),
     ]);
-    const o = d.orders;
-    const s = d.strategies;
-    const ltData = lt.trades || [];
-    const ltStats = lt.stats || {};
-    const aiStrats = s.ai_strategies || [];
 
-    // 合并 AI 订单
-    const baOrderData = baOrders || {};
-    const okxOrderData = okxOrders || {};
-    const aiOrders = [
-      ...Object.values(baOrderData.orders || {}).map(o => ({ ...o, strategy: 'Binance AI', _type: 'ai' })),
-      ...Object.values(baOrderData.positions || {}).map(p => ({ ...p, strategy: 'Binance AI', _type: 'ai_pos' })),
-      ...Object.values(okxOrderData.orders || {}).map(o => ({ ...o, strategy: 'OKX AI', _type: 'ai' })),
-      ...Object.values(okxOrderData.positions || {}).map(p => ({ ...p, strategy: 'OKX AI', _type: 'ai_pos' })),
-    ];
-    const hasAiOrders = aiOrders.length > 0;
+    // BB Ride 数据
+    const bbPositions = Object.values((bbExec && bbExec.positions) || {});
+    const bbOrders = Object.values((bbExec && bbExec.orders) || {});
+    const bbClosed = (bbExec && bbExec.closed_positions) || [];
+    const bbStatsData = (bbExec && bbExec.total_stats) || {};
+    const bbTotalPnl = bbStatsData.pnl || 0;
+    const bbTotalTrades = (bbStats && bbStats.total_closed) || bbStatsData.trades || bbClosed.length;
+    const bbTotalWins = (bbStats && bbStats.total_wins) || bbStatsData.wins || 0;
+    const bbWinRate = bbTotalTrades > 0 ? (bbTotalWins / bbTotalTrades * 100).toFixed(1) : '-';
 
-    const a = o.all_time || {};
-    const t = o.today || {};
+    // 推土机数据
+    const prPositions = Object.values((prExec && prExec.positions) || {});
+    const prOrders = Object.values((prExec && prExec.orders) || {});
+    const prClosed = (prExec && prExec.closed_positions) || [];
+    const prStats = (prExec && prExec.total_stats) || {};
+    const prTotalPnl = prStats.pnl || 0;
+    const prTotalTrades = prStats.trades || prClosed.length;
+    const prTotalWins = prStats.wins || 0;
+    const prWinRate = prTotalTrades > 0 ? (prTotalWins / prTotalTrades * 100).toFixed(1) : '-';
 
-    // 行情数据
     const ind = market.indicators || {};
     const pos = market.position || {};
     const hasPos = pos.side && pos.size > 0;
 
-    app.innerHTML = `
-      <div class="section">
-        <div class="section-title">📈 实时行情 <span class="count">BTC/USDT</span></div>
-        <div class="row">
-          <div class="col-4"><div class="stat-card">
-            <div class="label">现货价格</div>
-            <div class="value">$${fmtPrice(market.price)}</div>
-            <div class="sub ${market.change_24h >= 0 ? 'green' : 'red'}">24h ${market.change_24h >= 0 ? '+' : ''}${market.change_24h}%</div>
-          </div></div>
-          <div class="col-4"><div class="stat-card">
-            <div class="label">合约价格</div>
-            <div class="value">$${fmtPrice(market.contract_price)}</div>
-            <div class="sub">信号: ${renderSignal(market.signal)}</div>
-          </div></div>
-          <div class="col-4"><div class="stat-card">
-            <div class="label">账户权益</div>
-            <div class="value">$${fmtNum(account.total_equity)}</div>
-            <div class="sub">可用 $${fmtNum(account.total_wallet)}</div>
-          </div></div>
-          <div class="col-4"><div class="stat-card">
-            <div class="label">持仓</div>
-            <div class="value u-fs1">${hasPos ? renderSide(pos.side) + ' ' + pos.size.toFixed(3) : '无持仓'}</div>
-            <div class="sub">${hasPos ? '入场 ' + fmtPrice(pos.entry_price) + ' | 浮盈 ' + pnlStr(pos.unrealized_pnl) : '-'}</div>
-          </div></div>
-        </div>
-      </div>
+    // ── BTC 行情分析总结 ──
+    // ── BTC 行情分析总结 ──
+    var btcSummary = buildBtcAnalysis(market, trend, kdjData);
 
-      ${ind.price ? `
-      <div class="row" style="margin-top:8px">
-        <div class="col-4"><div class="stat-card" style="padding:10px 14px">
-          <div class="label">ADX</div>
-          <div class="value u-fs11">${ind.adx || '-'}</div>
-        </div></div>
-        <div class="col-4"><div class="stat-card" style="padding:10px 14px">
-          <div class="label">BB位置</div>
-          <div class="value u-fs11">${ind.bb_position || '-'}</div>
-        </div></div>
-        <div class="col-4"><div class="stat-card" style="padding:10px 14px">
-          <div class="label">趋势EMA</div>
-          <div class="value u-fs11">${ind['趋势ema'] || '-'}</div>
-        </div></div>
-        <div class="col-4"><div class="stat-card" style="padding:10px 14px">
-          <div class="label">KDJ (9,3) <span class="u-meta-xs">15m</span></div>
-          <div style="display:flex;align-items:center;justify-content:center;gap:8px;font-size:.9rem;font-weight:600;font-variant-numeric:tabular-nums">
-            <span class="u-meta-72">K</span><span style="color:${kdjData && kdjData.k < 30 ? '#3fb950' : kdjData && kdjData.k < 70 ? '#d29922' : '#f85149'}">${kdjData ? kdjData.k.toFixed(1) : '-'}</span>
-            <span class="u-meta-72">D</span><span>${kdjData ? kdjData.d.toFixed(1) : '-'}</span>
-            <span class="u-meta-72">J</span><span style="color:${kdjData && kdjData.j > 100 ? '#f85149' : '#d29922'}">${kdjData ? kdjData.j.toFixed(1) : '-'}</span>
-            <span style="font-size:.78rem;color:#8b949e;font-weight:400">${kdjData ? (kdjData.golden_cross ? '🟢金叉' : kdjData.death_cross ? '🔴死叉' : '') : ''}</span>
-          </div>
-        </div></div>
-      </div>` : ''}
+    app.innerHTML = [
+      '<div class="section">',
+      '  <div class="section-title">📈 BTC/USDT 实时行情 + AI 分析 <span class="count">24h ' + (market.change_24h >= 0 ? '+' : '') + market.change_24h + '%</span></div>',
+      '  <div class="row">',
+      '    <div class="col-6"><div class="stat-card"><div class="label">现货价格</div><div class="value">$' + fmtPrice(market.price) + '</div><div class="sub ' + (market.change_24h >= 0 ? 'green' : 'red') + '">24h ' + (market.change_24h >= 0 ? '+' : '') + market.change_24h + '%</div></div></div>',
+      '    <div class="col-6"><div class="stat-card"><div class="label">合约价格</div><div class="value">$' + fmtPrice(market.contract_price) + '</div><div class="sub">信号: ' + renderSignal(market.signal) + '</div></div></div>',
+      '  </div>',
+      '  <div class="btc-analysis-box">',
+      '    <div class="btc-analysis-summary">' + btcSummary.text + '</div>',
+      '  </div>',
+      '</div>'].join('\n');
 
-      ${account.positions && account.positions.length ? `
-      <div class="section">
-        <div class="section-title">📋 当前持仓</div>
-        <div class="table-wrap">${renderPositionTable(account.positions)}</div>
-      </div>` : ''}
 
-      <div class="section" id="trendSection" style="display:${window._trendScores ? '' : 'none'}">
-        <div class="section-title">📊 趋势打分 <span class="count">5m / 15m / 1h</span>
-          <a href="/trend-chart" style="float:right;font-size:.8rem;color:#58a6ff;text-decoration:none;line-height:1.8rem">📈 查看曲线</a>
-        </div>
-        <div class="row" id="trendScoreRow"></div>
-      </div>
 
-      <div class="row" style="margin-top:8px">
-        <div class="col-4"><div class="stat-card">
-          <div class="label">总交易</div>
-          <div class="value">${ltStats.total_trades || 0}</div>
-          <div class="sub">持仓中 ${ltStats.open_trades || 0} 笔</div>
-        </div></div>
-        <div class="col-4"><div class="stat-card">
-          <div class="label">总盈亏 (USDT)</div>
-          <div class="value ${pnlClass(ltStats.total_pnl)}">${pnlStr(ltStats.total_pnl)}</div>
-          <div class="sub">已平仓 ${ltStats.closed_trades || 0} 笔</div>
-        </div></div>
-        <div class="col-4"><div class="stat-card">
-          <div class="label">胜率</div>
-          <div class="value blue">${ltStats.win_rate || 0}%</div>
-          <div class="sub">${ltStats.wins || 0}胜 / ${ltStats.losses || 0}负</div>
-        </div></div>
-        <div class="col-4"><div class="stat-card">
-          <div class="label">活跃策略</div>
-          <div class="value" style="font-size:1.2rem">${s.list.length + aiStrats.filter(a=>a.running).length}</div>
-          <div class="sub">DB ${s.list.length} 个 / AI ${aiStrats.filter(a=>a.running).length} 个运行中</div>
-        </div></div>
-      </div>
+    // 当前持仓（已合并到行情卡片）
 
-      <div class="section">
-        <div class="section-title">📋 活跃策略 <span class="count">(${s.list.length} DB + ${aiStrats.filter(a=>a.running).length} AI)</span></div>
-        <div class="table-wrap">${renderStrategyTable(s.list)}</div>
-        ${aiStrats.length ? renderAiStrategyCards(aiStrats) : ''}
-
-      <div class="section">
-        <div class="section-title">📄 本地订单 <span class="count">(${ltData.length})</span></div>
-        <div class="table-wrap">${renderLocalTradeTable(ltData)}</div>
-      </div>
-
-      ${hasAiOrders ? `
-      <div class="section">
-        <div class="section-title">🤖 AI 挂单/持仓 <span class="count">(${aiOrders.length})</span></div>
-        <div class="table-wrap">${renderAiDashboardOrders(aiOrders)}</div>
-      </div>` : ''}
-    `;
-    // ── 趋势打分 ──
+    // 趋势打分
     if (trend && trend.timeframes) {
       window._trendScores = true;
-      const ts = qs('#trendSection');
-      const tr = qs('#trendScoreRow');
-      if (ts) ts.style.display = '';
-      if (tr) {
-        tr.innerHTML = Object.entries(trend.timeframes).map(([tf, data]) => {
-          const s = data.score || 50;
-          const d = data.detail || {};
-          const cls = s >= 70 ? 'green' : s >= 40 ? '' : 'red';
-          const label = {'5m':'5分钟','15m':'15分钟','1h':'1小时'}[tf] || tf;
-          return `<div class="col-4"><div class="stat-card" style="text-align:center">
-            <div class="label">${label}</div>
-            <div class="value" style="font-size:2rem;font-weight:700;color:${cls === 'green' ? '#3fb950' : cls === 'red' ? '#f85149' : '#d29922'}">${s}</div>
-            <div class="sub">${s >= 70 ? '🟢 乐观' : s >= 40 ? '🟡 中性' : '🔴 悲观'}</div>
-            <div style="font-size:.75rem;color:#8b949e;margin-top:6px">
-              EMA${d.s_ema} 动量${d.s_mom} RSI${d.s_rsi} BB${d.s_bb} MACD${d.s_macd} 量${d.s_vol}
-            </div>
-          </div></div>`;
-        }).join('');
+      var tfHtml = '<div class="row">';
+      for (var ti = 0; ti < Object.entries(trend.timeframes).length; ti++) {
+        var pair = Object.entries(trend.timeframes)[ti];
+        var tf = pair[0], data = pair[1];
+        var s = data.score || 50;
+        var d = data.detail || {};
+        var cls = s >= 70 ? "green" : s >= 40 ? "" : "red";
+        var label = {"5m":"5分钟","15m":"15分钟","1h":"1小时"}[tf] || tf;
+        var clr = cls === "green" ? "#3fb950" : cls === "red" ? "#f85149" : "#d29922";
+        tfHtml += '<div class="col-4"><div class="stat-card" style="text-align:center">' +
+          '<div class="label">' + label + '</div>' +
+          '<div class="value" style="font-size:2rem;font-weight:700;color:' + clr + '">' + s + '</div>' +
+          '<div class="sub">' + (s >= 70 ? "🟢 乐观" : s >= 40 ? "🟡 中性" : "🔴 悲观") + '</div>' +
+          '<div style="font-size:.75rem;color:#8b949e;margin-top:6px">' +
+          "EMA" + d.s_ema + " 动量" + d.s_mom + " RSI" + d.s_rsi + " BB" + d.s_bb + " MACD" + d.s_macd + " 量" + d.s_vol +
+          "</div></div></div>";
       }
+      tfHtml += "</div>";
+      app.innerHTML += '<div class="section"><div class="section-title">📊 趋势打分 <span class="count">5m / 15m / 1h</span>' +
+        '<a href="/trend-score-page" style="float:right;font-size:.8rem;color:#58a6ff;text-decoration:none;line-height:1.8rem">📈 趋势打分</a></div>' + tfHtml + "</div>";
     }
+
+    // 骑行 & 推土机 统计卡片
+    app.innerHTML += [
+      '<div class="row" style="margin-top:8px">',
+      '  <div class="col-6"><div class="section-title" style="font-size:1rem;margin-bottom:8px">🏍️ 骑行策略 (币安)</div>',
+      '    <div class="row">',
+      '      <div class="col-3"><div class="stat-card"><div class="label">持仓</div><div class="value" style="font-size:1.2rem">' + bbPositions.length + '</div><div class="sub">多' + bbPositions.filter(function(p){return p.direction==="LONG"}).length + ' / 空' + bbPositions.filter(function(p){return p.direction==="SHORT"}).length + '</div></div></div>',
+      '      <div class="col-3"><div class="stat-card"><div class="label">挂单</div><div class="value blue" style="font-size:1.2rem">' + bbOrders.length + '</div></div></div>',
+      '      <div class="col-3"><div class="stat-card"><div class="label">总盈亏</div><div class="value ' + pnlClass(bbTotalPnl) + '" style="font-size:1.2rem">' + pnlStr(bbTotalPnl) + '</div></div></div>',
+      '      <div class="col-3"><div class="stat-card"><div class="label">胜率</div><div class="value" style="font-size:1.2rem;color:' + (bbWinRate !== "-" && Number(bbWinRate) >= 50 ? "var(--green)" : "var(--red)") + '">' + bbWinRate + '%</div><div class="sub">' + bbTotalWins + '胜 / ' + bbTotalTrades + '单</div></div></div>',
+      '    </div>',
+      '  </div>',
+      '  <div class="col-6"><div class="section-title" style="font-size:1rem;margin-bottom:8px">🚜 推土机策略 (OKX)</div>',
+      '    <div class="row">',
+      '      <div class="col-3"><div class="stat-card"><div class="label">持仓</div><div class="value" style="font-size:1.2rem">' + prPositions.length + '</div></div></div>',
+      '      <div class="col-3"><div class="stat-card"><div class="label">挂单</div><div class="value blue" style="font-size:1.2rem">' + prOrders.length + '</div></div></div>',
+      '      <div class="col-3"><div class="stat-card"><div class="label">总盈亏</div><div class="value ' + pnlClass(prTotalPnl) + '" style="font-size:1.2rem">' + pnlStr(prTotalPnl) + '</div></div></div>',
+      '      <div class="col-3"><div class="stat-card"><div class="label">胜率</div><div class="value" style="font-size:1.2rem;color:' + (prWinRate !== "-" && Number(prWinRate) >= 50 ? "var(--green)" : "var(--red)") + '">' + prWinRate + '%</div><div class="sub">' + prTotalWins + '胜 / ' + prTotalTrades + '单</div></div></div>',
+      '    </div>',
+      '  </div>',
+      '</div>'
+    ].join("\n");
+
   } catch (e) {
-    app.innerHTML = `<div class="empty">加载失败: ${e.message}</div>`;
+    app.innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>';
   }
 }
 
@@ -256,9 +284,17 @@ function fmtCryptoPrice(v) {
   return n.toFixed(8);
 }
 
-function fmtNum(v) {
+function fmtNum(v, d) {
   if (v === null || v === undefined) return '-';
-  return Number(v).toFixed(2);
+  return Number(v).toFixed(d === undefined ? 2 : d);
+}
+
+function fmtDuration(seconds) {
+  if (seconds === undefined || seconds === null || isNaN(seconds)) return '-';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return h + 'h' + m + 'm';
+  return m + 'm';
 }
 
 function renderSignal(s) {
@@ -2880,6 +2916,646 @@ async function _renderBbRideExecWithExchange(exchange) {
   }
 }
 
+// ── BB Ride 骑行执行面板（嵌入 SPA 版） ───────────────────
+
+let _dexExecData = null;
+let _dexScanData = null;
+let _dexActiveTab = 'f';
+
+async function renderBbRideExecDash() {
+  setActiveNav('bb-ride-exec-dash');
+  window._bbRideLinkExchange = 'binance';
+  const app = qs('#app');
+  app.innerHTML = '<div class="loading">加载骑行面板...</div>';
+  if (window._dexTimer) { clearInterval(window._dexTimer); window._dexTimer = null; }
+  try {
+    const [execData, scanData] = await Promise.all([
+      api('/api/bb-ride-execution'),
+      api('/api/bb-ride'),
+    ]);
+    _dexExecData = execData;
+    _dexScanData = scanData;
+    _dexActiveTab = 'f';
+
+    app.innerHTML = _dexBuildHtml(execData, scanData);
+    _dexFillData(execData, scanData);
+
+    document.getElementById('dexTabs').addEventListener('click', function(e) {
+      const btn = e.target.closest('.dash-tab');
+      if (!btn) return;
+      _dexActiveTab = btn.getAttribute('data-p');
+      document.querySelectorAll('#dexTabs .dash-tab').forEach(function(x) { x.classList.remove('active'); });
+      document.querySelectorAll('.dash-panel').forEach(function(x) { x.classList.remove('active'); });
+      btn.classList.add('active');
+      var panel = document.getElementById('dexP' + _dexActiveTab);
+      if (panel) panel.classList.add('active');
+    });
+
+    window._dexTimer = setInterval(function() {
+      if (!document.getElementById('dexTabs')) { clearInterval(window._dexTimer); return; }
+      Promise.all([
+        api('/api/bb-ride-execution').catch(function() { return null; }),
+        api('/api/bb-ride').catch(function() { return null; }),
+      ]).then(function(r) {
+        if (!document.getElementById('dexTabs')) return;
+        var ed = r[0], sd = r[1];
+        if (ed) _dexExecData = ed;
+        if (sd) _dexScanData = sd;
+        _dexFillData(_dexExecData, _dexScanData);
+      });
+    }, 10000);
+
+  } catch (e) {
+    app.innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>';
+  }
+}
+
+async function renderBbRideExecDashOkx() {
+  setActiveNav('bb-ride-exec-dash-okx');
+  window._bbRideLinkExchange = 'okx';
+  const app = qs('#app');
+  app.innerHTML = '<div class="loading">加载骑行面板(OKX)...</div>';
+  if (window._dexTimer) { clearInterval(window._dexTimer); window._dexTimer = null; }
+  try {
+    const [execData, scanData] = await Promise.all([
+      api('/api/bb-ride-execution/okx'),
+      api('/api/bb-ride/okx'),
+    ]);
+    _dexExecData = execData;
+    _dexScanData = scanData;
+    _dexActiveTab = 'f';
+
+    app.innerHTML = _dexBuildHtml(execData, scanData);
+    _dexFillData(execData, scanData);
+
+    document.getElementById('dexTabs').addEventListener('click', function(e) {
+      const btn = e.target.closest('.dash-tab');
+      if (!btn) return;
+      _dexActiveTab = btn.getAttribute('data-p');
+      document.querySelectorAll('#dexTabs .dash-tab').forEach(function(x) { x.classList.remove('active'); });
+      document.querySelectorAll('.dash-panel').forEach(function(x) { x.classList.remove('active'); });
+      btn.classList.add('active');
+      var panel = document.getElementById('dexP' + _dexActiveTab);
+      if (panel) panel.classList.add('active');
+    });
+
+    window._dexTimer = setInterval(function() {
+      if (!document.getElementById('dexTabs')) { clearInterval(window._dexTimer); return; }
+      Promise.all([
+        api('/api/bb-ride-execution/okx').catch(function() { return null; }),
+        api('/api/bb-ride/okx').catch(function() { return null; }),
+      ]).then(function(r) {
+        if (!document.getElementById('dexTabs')) return;
+        var ed = r[0], sd = r[1];
+        if (ed) _dexExecData = ed;
+        if (sd) _dexScanData = sd;
+        _dexFillData(_dexExecData, _dexScanData);
+      });
+    }, 10000);
+
+  } catch (e) {
+    app.innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>';
+  }
+}
+
+function _dexBuildHtml(execData, scanData) {
+  var orders = (execData && execData.orders) || {};
+  var positions = (execData && execData.positions) || {};
+  var closed = (execData && execData.closed_positions) || [];
+  var ts = (execData && execData.total_stats) || {};
+  var resultsAll = (scanData && scanData.results) || [];
+
+  var todayStr = new Date().getFullYear() + '-' +
+    String(new Date().getMonth()+1).padStart(2,'0') + '-' +
+    String(new Date().getDate()).padStart(2,'0');
+  var results = resultsAll.filter(function(r) { return (r.pattern_start_bj||'').substring(0,10) === todayStr; });
+
+  var pendingCount = Object.keys(orders).length;
+  var filledCount = Object.keys(positions).length;
+  var closedCount = closed.length;
+  var totalPnl = ts.pnl || 0;
+  var totalTrades = ts.trades || closedCount;
+  var totalWins = ts.wins || 0;
+  var winRate = totalTrades > 0 ? totalWins / totalTrades * 100 : 0;
+  var lossStreaks = Object.keys((execData && execData.loss_streaks) || {}).length;
+  var longPosCount = Object.keys(positions).filter(function(k) { return k.startsWith('LONG'); }).length;
+  var shortPosCount = Object.keys(positions).filter(function(k) { return k.startsWith('SHORT'); }).length;
+  var longSignals = results.filter(function(r) { return r.direction === 'up'; });
+  var shortSignals = results.filter(function(r) { return r.direction === 'down'; });
+
+  var pnlCls = totalPnl >= 0 ? 'green' : 'red';
+  var wrCls = winRate >= 50 ? 'green' : 'red';
+
+  var h = '';
+
+  // header
+  h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--border);margin-bottom:14px">' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+    '<div class="section-title" style="margin:0;font-size:18px">🏍️ BB Ride · 布林骑行执行面板</div>' +
+    '<span class="dash-badge">' + todayStr.replace('2026-','') + ' 持仓 <strong>' + filledCount + '</strong></span>' +
+    '<span class="dash-dot"></span></div>' +
+    '<span class="dash-badge" id="dexStBadge">🕐 ' + new Date().toLocaleTimeString() + ' 更新</span></div>';
+
+  // cards
+  h += '<div class="dash-cards">' +
+    '<div class="dash-card"><div class="l">持仓（多/空）</div><div class="v" id="dexCardFilled">' + filledCount + '</div><div class="s">多' + longPosCount + ' / 空' + shortPosCount + '</div></div>' +
+    '<div class="dash-card"><div class="l">挂单中</div><div class="v blue" id="dexCardPending">' + pendingCount + '</div></div>' +
+    '<div class="dash-card"><div class="l">已平仓</div><div class="v" id="dexCardClosed">' + closedCount + '</div></div>' +
+    '<div class="dash-card"><div class="l">总盈亏</div><div class="v ' + pnlCls + '" id="dexCardPnl">' + (totalPnl >= 0 ? '+' : '') + fmtNum(totalPnl) + '</div><div class="s">USDT</div></div>' +
+    '<div class="dash-card"><div class="l">胜率</div><div class="v ' + wrCls + '" id="dexCardWr">' + fmtNum(winRate, 1) + '%</div><div class="s">' + totalWins + '胜 / ' + totalTrades + '单</div></div>' +
+    '<div class="dash-card"><div class="l">连亏币种</div><div class="v' + (lossStreaks > 0 ? ' red' : '') + '" id="dexCardLs">' + lossStreaks + '</div><div class="s">⛔黑名单</div></div>' +
+    '</div>';
+
+  // tabs
+  h += '<div class="dash-tabs" id="dexTabs">' +
+    '<button class="dash-tab active" data-p="f">📊 持仓中 <span class="c green" id="dexTabFi">' + filledCount + '</span></button>' +
+    '<button class="dash-tab" data-p="p">⏳ 挂单中 <span class="c gray" id="dexTabPe">' + pendingCount + '</span></button>' +
+    '<button class="dash-tab" data-p="c">✔ 已平仓 <span class="c gray" id="dexTabCl">' + closedCount + '</span></button>' +
+    '<button class="dash-tab" data-p="sl">📈 多头信号 <span class="c blue" id="dexTabSl">' + (longSignals.length > 10 ? '10+' : longSignals.length) + '</span></button>' +
+    '<button class="dash-tab" data-p="sk">📉 空头信号 <span class="c red" id="dexTabSk">' + (shortSignals.length > 10 ? '10+' : shortSignals.length) + '</span></button>' +
+    '</div>';
+
+  // panels
+  h += '<div class="dash-panel active" id="dexPf"><div class="table-wrap"><table class="data-table"><thead><tr><th>币种</th><th>方向</th><th>入场价</th><th>数量</th><th>当前价</th><th>浮盈</th><th>止盈</th><th>止损</th><th>持仓时间</th></tr></thead><tbody id="dexTbF"></tbody></table></div></div>';
+  h += '<div class="dash-panel" id="dexPp"><div class="table-wrap"><table class="data-table"><thead><tr><th>币种</th><th>方向</th><th>限价</th><th>数量</th><th>挂单时间</th><th>止盈</th><th>止损</th><th>过期剩余</th></tr></thead><tbody id="dexTbP"></tbody></table></div></div>';
+  h += '<div class="dash-panel" id="dexPc"><div class="table-wrap"><table class="data-table"><thead><tr><th>币种</th><th>方向</th><th>入场→出场</th><th>盈亏</th><th>盈亏%</th><th>原因</th><th>时间</th></tr></thead><tbody id="dexTbC"></tbody></table></div></div>';
+  h += '<div class="dash-panel" id="dexPsl"><div class="table-wrap"><table class="data-table"><thead><tr><th>币种</th><th>当前价</th><th>匹配</th><th>涨跌幅%</th><th>最大单根%</th><th>24h量</th><th>⭐评分</th><th>开始(北京)</th><th>发现时间</th></tr></thead><tbody id="dexTbSl"></tbody></table></div></div>';
+  h += '<div class="dash-panel" id="dexPsk"><div class="table-wrap"><table class="data-table"><thead><tr><th>币种</th><th>当前价</th><th>匹配</th><th>涨跌幅%</th><th>最大单根%</th><th>24h量</th><th>⭐评分</th><th>开始(北京)</th><th>发现时间</th></tr></thead><tbody id="dexTbSk"></tbody></table></div></div>';
+
+  return h;
+}
+
+function _dexFillData(execData, scanData) {
+  var orders = (execData && execData.orders) || {};
+  var positions = (execData && execData.positions) || {};
+  var closed = (execData && execData.closed_positions) || [];
+  var ts = (execData && execData.total_stats) || {};
+  var resultsAll = (scanData && scanData.results) || [];
+
+  var todayStr = new Date().getFullYear() + '-' +
+    String(new Date().getMonth()+1).padStart(2,'0') + '-' +
+    String(new Date().getDate()).padStart(2,'0');
+  var results = resultsAll.filter(function(r) { return (r.pattern_start_bj||'').substring(0,10) === todayStr; });
+
+  var pendingCount = Object.keys(orders).length;
+  var filledCount = Object.keys(positions).length;
+  var closedCount = closed.length;
+  var totalPnl = ts.pnl || 0;
+  var totalTrades = ts.trades || closedCount;
+  var totalWins = ts.wins || 0;
+  var winRate = totalTrades > 0 ? totalWins / totalTrades * 100 : 0;
+  var lossStreaks = Object.keys((execData && execData.loss_streaks) || {}).length;
+  var longPosCount = Object.keys(positions).filter(function(k) { return k.startsWith('LONG'); }).length;
+  var shortPosCount = Object.keys(positions).filter(function(k) { return k.startsWith('SHORT'); }).length;
+  var longSignals = results.filter(function(r) { return r.direction === 'up'; });
+  var shortSignals = results.filter(function(r) { return r.direction === 'down'; });
+
+  var now = Date.now() / 1000;
+
+  // card values
+  var el = document.getElementById('dexCardFilled'); if (el) el.textContent = filledCount;
+  el = document.getElementById('dexCardPending'); if (el) el.textContent = pendingCount;
+  el = document.getElementById('dexCardClosed'); if (el) el.textContent = closedCount;
+  el = document.getElementById('dexCardPnl'); if (el) { el.textContent = (totalPnl >= 0 ? '+' : '') + fmtNum(totalPnl); el.className = 'v ' + (totalPnl >= 0 ? 'green' : 'red'); }
+  el = document.getElementById('dexCardWr'); if (el) { el.textContent = fmtNum(winRate, 1) + '%'; el.className = 'v ' + (winRate >= 50 ? 'green' : 'red'); }
+  el = document.getElementById('dexCardLs'); if (el) { el.textContent = lossStreaks; el.className = 'v' + (lossStreaks > 0 ? ' red' : ''); }
+
+  // tab labels
+  el = document.getElementById('dexTabFi'); if (el) el.textContent = filledCount;
+  el = document.getElementById('dexTabPe'); if (el) el.textContent = pendingCount;
+  el = document.getElementById('dexTabCl'); if (el) el.textContent = closedCount;
+  el = document.getElementById('dexTabSl'); if (el) el.textContent = longSignals.length > 10 ? '10+' : longSignals.length;
+  el = document.getElementById('dexTabSk'); if (el) el.textContent = shortSignals.length > 10 ? '10+' : shortSignals.length;
+
+  // status
+  el = document.getElementById('dexStBadge'); if (el) el.innerHTML = '🕐 ' + new Date().toLocaleTimeString() + ' 更新';
+
+  // --- positions table ---
+  var fHtml = '';
+  var posKeys = Object.keys(positions);
+  if (posKeys.length) {
+    for (var i = 0; i < posKeys.length; i++) {
+      var o = positions[posKeys[i]];
+      var dir = o.direction === 'SHORT' ? '🔴 空' : '🟢 多';
+      var curPx = o.current_price || o.entry_price;
+      var upnl = o.unrealized_pnl;
+      var upnlPct = o.unrealized_pnl_pct;
+      var upnlStr = '-';
+      if (upnl !== undefined && upnl !== null) {
+        upnlStr = '<span style="color:' + (upnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (upnl >= 0 ? '+' : '') + fmtNum(upnl) + '</span>';
+        if (upnlPct !== undefined && upnlPct !== null) {
+          upnlStr += ' <span style="color:' + (upnlPct >= 0 ? 'var(--green)' : 'var(--red)') + '">(' + (upnlPct >= 0 ? '+' : '') + fmtNum(upnlPct, 1) + '%)</span>';
+        }
+      }
+      var dur = o.filled_at ? now - o.filled_at : 0;
+      fHtml += '<tr>' +
+        '<td><strong><a href="' + getCoinLink(o.coin) + '" target="_blank" class="u-link">' + escHtml(o.coin) + ' ↗</a></strong></td>' +
+        '<td>' + dir + '</td>' +
+        '<td>' + fmtNum(o.entry_price, 6) + '</td>' +
+        '<td>' + fmtNum(o.quantity, 2) + '</td>' +
+        '<td>' + (typeof curPx === 'number' ? fmtNum(curPx, 6) : curPx) + '</td>' +
+        '<td>' + upnlStr + '</td>' +
+        '<td>' + fmtNum(o.tp_price, 6) + '</td>' +
+        '<td>' + fmtNum(o.sl_price, 6) + '</td>' +
+        '<td>' + fmtDuration(dur) + '</td>' +
+        '</tr>';
+    }
+  } else { fHtml = '<tr><td colspan="9" class="dash-emp">暂无持仓</td></tr>'; }
+  el = document.getElementById('dexTbF'); if (el) el.innerHTML = fHtml;
+
+  // --- pending orders table ---
+  var pHtml = '';
+  var ordKeys = Object.keys(orders);
+  if (ordKeys.length) {
+    for (var i = 0; i < ordKeys.length; i++) {
+      var o = orders[ordKeys[i]];
+      var dir = o.direction === 'SHORT' ? '🔴 空' : '🟢 多';
+      var placedAt = o.placed_at || 0;
+      var elapsed = placedAt > 0 ? now - placedAt : 0;
+      var expireRemain = Math.max(0, 300 - elapsed);
+      var remainStr = expireRemain > 0 ? fmtDuration(expireRemain) : '⏰ 过期';
+      pHtml += '<tr>' +
+        '<td><strong><a href="' + getCoinLink(o.coin) + '" target="_blank" class="u-link">' + escHtml(o.coin) + ' ↗</a></strong></td>' +
+        '<td>' + dir + '</td>' +
+        '<td>' + fmtNum(o.price, 6) + '</td>' +
+        '<td>' + fmtNum(o.quantity, 2) + '</td>' +
+        '<td>' + fmtTime(placedAt * 1000) + '</td>' +
+        '<td>' + fmtNum(o.tp_price, 6) + '</td>' +
+        '<td>' + fmtNum(o.sl_price, 6) + '</td>' +
+        '<td style="color:' + (expireRemain <= 60 ? 'var(--red)' : 'inherit') + '">' + remainStr + '</td>' +
+        '</tr>';
+    }
+  } else { pHtml = '<tr><td colspan="8" class="dash-emp">暂无挂单</td></tr>'; }
+  el = document.getElementById('dexTbP'); if (el) el.innerHTML = pHtml;
+
+  // --- closed positions table ---
+  var cHtml = '';
+  if (closed.length) {
+    var cList = closed.slice(-50).reverse();
+    for (var i = 0; i < cList.length; i++) {
+      var o = cList[i];
+      var dir = o.direction === 'SHORT' ? '🔴 空' : '🟢 多';
+      var pnl = o.pnl || 0;
+      var pnlPct = o.pnl_pct || 0;
+      cHtml += '<tr>' +
+        '<td><strong><a href="' + getCoinLink(o.coin) + '" target="_blank" class="u-link">' + escHtml(o.coin) + ' ↗</a></strong></td>' +
+        '<td>' + dir + '</td>' +
+        '<td>' + fmtNum(o.entry_price, 4) + '→' + fmtNum(o.close_price, 4) + '</td>' +
+        '<td style="color:' + (pnl >= 0 ? 'var(--green)' : 'var(--red)') + ';font-weight:500">' + (pnl >= 0 ? '+' : '') + fmtNum(pnl) + '</td>' +
+        '<td style="color:' + (pnlPct >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (pnlPct >= 0 ? '+' : '') + fmtNum(pnlPct, 1) + '%</td>' +
+        '<td>' + (pnl >= 0 ? '✅' : '❌') + '</td>' +
+        '<td>' + (o.close_time_str || '-') + '</td>' +
+        '</tr>';
+    }
+  } else { cHtml = '<tr><td colspan="7" class="dash-emp">暂无已平仓记录</td></tr>'; }
+  el = document.getElementById('dexTbC'); if (el) el.innerHTML = cHtml;
+
+  // --- long signals table ---
+  var slHtml = '';
+  var longSorted = longSignals.sort(function(a, b) {
+    var ta = a.signal_time || '', tb = b.signal_time || '';
+    return tb > ta ? 1 : (tb < ta ? -1 : 0);
+  }).slice(0, 10);
+  if (longSorted.length) {
+    for (var i = 0; i < longSorted.length; i++) {
+      var r = longSorted[i];
+      var risePct = r.rise_pct || 0;
+      var volStr = r.volume_24h >= 1e9 ? '$' + (r.volume_24h / 1e9).toFixed(1) + 'B' : '$' + (r.volume_24h / 1e6).toFixed(0) + 'M';
+      var matchStr = (r.volume_ratio || r.match_count || '-') + '/15';
+      var starStr = '⭐'.repeat(Math.min(r.score || 0, 5)) + '☆'.repeat(Math.max(0, 5 - (r.score || 0)));
+      var startStr = (r.pattern_start_bj || '').substring(0, 16).replace('T', ' ') || '-';
+      var signalStr = (r.signal_time || '').substring(0, 16).replace('T', ' ') || '-';
+      slHtml += '<tr>' +
+        '<td><strong><a href="' + getCoinLink(r.coin) + '" target="_blank" class="u-link">' + escHtml(r.coin) + ' ↗</a></strong></td>' +
+        '<td>' + fmtCryptoPrice(r.current_price) + '</td>' +
+        '<td>' + matchStr + '</td>' +
+        '<td style="color:var(--green)">+' + fmtNum(risePct, 2) + '%</td>' +
+        '<td>' + (r.max_extreme ? fmtNum(r.max_extreme, 2) + '%' : '-') + '</td>' +
+        '<td>' + volStr + '</td>' +
+        '<td style="font-size:.82rem">' + starStr + '</td>' +
+        '<td>' + startStr + '</td>' +
+        '<td style="color:#8b949e">' + signalStr + '</td>' +
+        '</tr>';
+    }
+  } else { slHtml = '<tr><td colspan="9" class="dash-emp">暂无多头信号</td></tr>'; }
+  el = document.getElementById('dexTbSl'); if (el) el.innerHTML = slHtml;
+
+  // --- short signals table ---
+  var skHtml = '';
+  var shortSorted = shortSignals.sort(function(a, b) {
+    var ta = a.signal_time || '', tb = b.signal_time || '';
+    return tb > ta ? 1 : (tb < ta ? -1 : 0);
+  }).slice(0, 10);
+  if (shortSorted.length) {
+    for (var i = 0; i < shortSorted.length; i++) {
+      var r = shortSorted[i];
+      var risePct = r.rise_pct || 0;
+      var volStr = r.volume_24h >= 1e9 ? '$' + (r.volume_24h / 1e9).toFixed(1) + 'B' : '$' + (r.volume_24h / 1e6).toFixed(0) + 'M';
+      var matchStr = (r.volume_ratio || r.match_count || '-') + '/15';
+      var starStr = '⭐'.repeat(Math.min(r.score || 0, 5)) + '☆'.repeat(Math.max(0, 5 - (r.score || 0)));
+      var startStr = (r.pattern_start_bj || '').substring(0, 16).replace('T', ' ') || '-';
+      var signalStr = (r.signal_time || '').substring(0, 16).replace('T', ' ') || '-';
+      skHtml += '<tr>' +
+        '<td><strong><a href="' + getCoinLink(r.coin) + '" target="_blank" class="u-link">' + escHtml(r.coin) + ' ↗</a></strong></td>' +
+        '<td>' + fmtCryptoPrice(r.current_price) + '</td>' +
+        '<td>' + matchStr + '</td>' +
+        '<td style="color:var(--red)">' + fmtNum(risePct, 2) + '%</td>' +
+        '<td>' + (r.max_extreme ? fmtNum(r.max_extreme, 2) + '%' : '-') + '</td>' +
+        '<td>' + volStr + '</td>' +
+        '<td style="font-size:.82rem">' + starStr + '</td>' +
+        '<td>' + startStr + '</td>' +
+        '<td style="color:#8b949e">' + signalStr + '</td>' +
+        '</tr>';
+    }
+  } else { skHtml = '<tr><td colspan="9" class="dash-emp">暂无空头信号</td></tr>'; }
+  el = document.getElementById('dexTbSk'); if (el) el.innerHTML = skHtml;
+}
+
+// ── 推土机执行面板（嵌入 SPA 版） ────────────────────────
+
+let _prdExecData = null;
+let _prdScanData = null;
+let _prdBalance = null;
+let _prdActiveTab = 's';
+
+async function renderBbRidePushRetestDash() {
+  setActiveNav('push-retest');
+  window._bbRideLinkExchange = 'okx';
+  const app = qs('#app');
+  app.innerHTML = '<div class="loading">加载推土机面板...</div>';
+  if (window._prdTimer) { clearInterval(window._prdTimer); window._prdTimer = null; }
+  try {
+    const [scanData, execData, balanceData] = await Promise.all([
+      api('/api/bb-ride/push-retest'),
+      api('/api/bb-ride-execution/push-retest'),
+      api('/api/push-retest/balance').catch(function() { return null; }),
+    ]);
+    _prdScanData = scanData;
+    _prdExecData = execData;
+    _prdBalance = balanceData;
+    _prdActiveTab = 's';
+
+    app.innerHTML = _prdBuildHtml(scanData, execData, balanceData);
+    _prdFillData(scanData, execData, balanceData);
+
+    document.getElementById('prdTabs').addEventListener('click', function(e) {
+      var btn = e.target.closest('.dash-tab');
+      if (!btn) return;
+      _prdActiveTab = btn.getAttribute('data-p');
+      document.querySelectorAll('#prdTabs .dash-tab').forEach(function(x) { x.classList.remove('active'); });
+      document.querySelectorAll('.dash-panel').forEach(function(x) { x.classList.remove('active'); });
+      btn.classList.add('active');
+      var panel = document.getElementById('prdP' + _prdActiveTab);
+      if (panel) panel.classList.add('active');
+    });
+
+    window._prdTimer = setInterval(function() {
+      if (!document.getElementById('prdTabs')) { clearInterval(window._prdTimer); return; }
+      Promise.all([
+        api('/api/bb-ride/push-retest').catch(function() { return null; }),
+        api('/api/bb-ride-execution/push-retest').catch(function() { return null; }),
+      ]).then(function(r) {
+        if (!document.getElementById('prdTabs')) return;
+        var sd = r[0], ed = r[1];
+        if (sd) _prdScanData = sd;
+        if (ed) _prdExecData = ed;
+        _prdFillData(_prdScanData, _prdExecData, _prdBalance);
+      });
+    }, 10000);
+
+  } catch (e) {
+    app.innerHTML = '<div class="empty">加载失败: ' + e.message + '</div>';
+  }
+}
+
+function _prdBuildHtml(scanData, execData, balance) {
+  var results = (scanData && scanData.results) || [];
+  var scanTime = (scanData && scanData.scan_time) || '';
+  var orders = (execData && execData.orders) || {};
+  var positions = (execData && execData.positions) || {};
+  var closed = (execData && execData.closed_positions) || [];
+  var stats = (execData && execData.total_stats) || {};
+
+  var pendingCount = Object.keys(orders).length;
+  var filledCount = Object.keys(positions).length;
+  var closedCount = closed.length;
+  var totalPnl = (stats && stats.pnl) || 0;
+  var balStr = balance ? fmtNum(balance.usdt_equity, 1) : '...';
+  var upnl = (balance && balance.unrealized_pnl) || 0;
+
+  var longs = results.filter(function(r) { return r.direction === 'long'; });
+  var shorts = results.filter(function(r) { return r.direction !== 'long'; });
+
+  var h = '';
+
+  // header
+  h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--border);margin-bottom:14px">' +
+    '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+    '<div class="section-title" style="margin:0;font-size:18px">🧰 推土机策略 · OKX</div>' +
+    '<span class="dash-badge">扫描 <strong>' + (scanData ? (scanData.total || results.length) : '?') + '</strong></span>' +
+    '<span class="dash-dot"></span>' +
+    '<span class="dash-badge" id="prdTBadge">🕐 ' + (scanTime || '') + '</span></div>' +
+    '<span class="dash-badge" id="prdStBadge">🕐 ' + new Date().toLocaleTimeString() + ' OK</span></div>';
+
+  // cards
+  h += '<div class="dash-cards">' +
+    '<div class="dash-card"><div class="l">候选币种</div><div class="v" id="prdCardCoins">' + results.length + '</div></div>' +
+    '<div class="dash-card"><div class="l">持仓</div><div class="v green" id="prdCardFilled">' + filledCount + '</div></div>' +
+    '<div class="dash-card"><div class="l">挂单</div><div class="v blue" id="prdCardPending">' + pendingCount + '</div></div>' +
+    '<div class="dash-card"><div class="l">已平仓</div><div class="v" id="prdCardClosed">' + closedCount + '</div></div>' +
+    '<div class="dash-card"><div class="l">总盈亏</div><div class="v ' + (totalPnl >= 0 ? 'green' : 'red') + '" id="prdCardPnl">' + (totalPnl >= 0 ? '+' : '') + fmtNum(totalPnl) + '</div><div class="s">USDT</div></div>' +
+    '<div class="dash-card"><div class="l">合约资产</div><div class="v" id="prdCardBal">' + balStr + '</div><div class="s">USDT ' + (balance ? (balance.pos_count > 0 ? balance.pos_count + '仓' : '无持仓') : '') + ' | 浮盈:<span style="color:' + (upnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (upnl >= 0 ? '+' : '') + fmtNum(upnl) + '</span></div></div>' +
+    '</div>';
+
+  // tabs
+  h += '<div class="dash-tabs" id="prdTabs">' +
+    '<button class="dash-tab active" data-p="s">📈 多头候选 <span class="c blue" id="prdTabSc">' + longs.length + '</span></button>' +
+    '<button class="dash-tab" data-p="k">📉 空头候选 <span class="c red" id="prdTabSk">' + shorts.length + '</span></button>' +
+    '<button class="dash-tab" data-p="p">⏳ 挂单中 <span class="c gray" id="prdTabPe">' + pendingCount + '</span></button>' +
+    '<button class="dash-tab" data-p="f">📊 持仓中 <span class="c green" id="prdTabFi">' + filledCount + '</span></button>' +
+    '<button class="dash-tab" data-p="c">✔ 已平仓 <span class="c gray" id="prdTabCl">' + closedCount + '</span></button>' +
+    '</div>';
+
+  // panels
+  h += '<div class="dash-panel active" id="prdPs"><div class="table-wrap"><table class="data-table"><thead><tr><th>币种</th><th>评分</th><th>突破时间</th><th>突破价</th><th>涨幅</th><th>当前价</th><th>回踩类型</th><th>状态</th></tr></thead><tbody id="prdTbS"></tbody></table></div></div>';
+  h += '<div class="dash-panel" id="prdPk"><div class="table-wrap"><table class="data-table"><thead><tr><th>币种</th><th>评分</th><th>跌破时间</th><th>跌破价</th><th>跌幅</th><th>当前价</th><th>反弹类型</th><th>状态</th></tr></thead><tbody id="prdTbK"></tbody></table></div></div>';
+  h += '<div class="dash-panel" id="prdPp"><div class="table-wrap"><table class="data-table"><thead><tr><th>币种</th><th>方向</th><th>限价</th><th>数量</th><th>时间</th><th>止盈</th><th>止损</th></tr></thead><tbody id="prdTbP"></tbody></table></div></div>';
+  h += '<div class="dash-panel" id="prdPf"><div class="table-wrap"><table class="data-table"><thead><tr><th>币种</th><th>方向</th><th>入场价</th><th>数量</th><th>当前价</th><th>浮盈</th><th>止盈</th><th>止损</th></tr></thead><tbody id="prdTbF"></tbody></table></div></div>';
+  h += '<div class="dash-panel" id="prdPc"><div class="table-wrap"><table class="data-table"><thead><tr><th>币种</th><th>方向</th><th>入场→出场</th><th>盈亏</th><th>盈亏%</th><th>原因</th><th>时间</th></tr></thead><tbody id="prdTbC"></tbody></table></div></div>';
+
+  return h;
+}
+
+function _prdFillData(scanData, execData, balance) {
+  var results = (scanData && scanData.results) || [];
+  var scanTime = (scanData && scanData.scan_time) || '';
+  var orders = (execData && execData.orders) || {};
+  var positions = (execData && execData.positions) || {};
+  var closed = (execData && execData.closed_positions) || [];
+  var stats = (execData && execData.total_stats) || {};
+
+  var pendingCount = Object.keys(orders).length;
+  var filledCount = Object.keys(positions).length;
+  var closedCount = closed.length;
+  var totalPnl = (stats && stats.pnl) || 0;
+  var balStr = balance ? fmtNum(balance.usdt_equity, 1) : '...';
+  var upnl = (balance && balance.unrealized_pnl) || 0;
+
+  var longs = results.filter(function(r) { return r.direction === 'long'; });
+  var shorts = results.filter(function(r) { return r.direction !== 'long'; });
+  var now = Date.now() / 1000;
+
+  // card values
+  var el = document.getElementById('prdCardCoins'); if (el) el.textContent = results.length;
+  el = document.getElementById('prdCardFilled'); if (el) el.textContent = filledCount;
+  el = document.getElementById('prdCardPending'); if (el) el.textContent = pendingCount;
+  el = document.getElementById('prdCardClosed'); if (el) el.textContent = closedCount;
+  el = document.getElementById('prdCardPnl'); if (el) { el.textContent = (totalPnl >= 0 ? '+' : '') + fmtNum(totalPnl); el.className = 'v ' + (totalPnl >= 0 ? 'green' : 'red'); }
+  el = document.getElementById('prdCardBal'); if (el) { el.textContent = balStr; }
+  el = document.getElementById('prdTBadge'); if (el) el.textContent = '🕐 ' + (scanTime || '');
+
+  // tab labels
+  el = document.getElementById('prdTabSc'); if (el) el.textContent = longs.length;
+  el = document.getElementById('prdTabSk'); if (el) el.textContent = shorts.length;
+  el = document.getElementById('prdTabPe'); if (el) el.textContent = pendingCount;
+  el = document.getElementById('prdTabFi'); if (el) el.textContent = filledCount;
+  el = document.getElementById('prdTabCl'); if (el) el.textContent = closedCount;
+  el = document.getElementById('prdStBadge'); if (el) el.innerHTML = '🕐 ' + new Date().toLocaleTimeString() + ' OK';
+
+  // --- long candidates ---
+  var sHtml = '';
+  var longSorted = longs.sort(function(a, b) {
+    var ta = a.break_time || '', tb = b.break_time || '';
+    var bt = tb.localeCompare(ta);
+    return bt || (b.score || 0) - (a.score || 0);
+  });
+  for (var i = 0; i < longSorted.length; i++) {
+    var c = longSorted[i];
+    var roc = c.price && c.break_price ? ((c.price - c.break_price) / c.break_price * 100) : 0;
+    var statusTxt, statusCls;
+    if (!c.retest_time || !c.retest_type || c.retest_type.indexOf('待') >= 0) {
+      statusTxt = '⏳ 待回踩'; statusCls = 'color:var(--text-muted)';
+    } else if (c.retest_type.indexOf('BB') >= 0 || c.retest_type.indexOf('布林') >= 0) {
+      statusTxt = '✅ 布林回踩'; statusCls = 'color:var(--green)';
+    } else if (c.retest_type.indexOf('EMA') >= 0) {
+      statusTxt = '✅ EMA回踩'; statusCls = 'color:var(--green)';
+    } else {
+      statusTxt = '🔵 关注'; statusCls = 'color:var(--blue)';
+    }
+    var link = 'https://www.okx.com/zh-hans/trade-swap/' + c.coin.toLowerCase() + '-usdt-swap';
+    sHtml += '<tr>' +
+      '<td><strong><a href="' + link + '" target="_blank" class="u-link">' + escHtml(c.coin) + ' ↗</a></strong></td>' +
+      '<td>' + (c.score || '-') + '</td>' +
+      '<td>' + (c.break_time || '-') + '</td>' +
+      '<td>' + fmtNum(c.break_price, 4) + '</td>' +
+      '<td style="color:var(--green)">+' + (c.break_strength || 0).toFixed(2) + '%</td>' +
+      '<td style="color:' + (roc >= 0 ? 'var(--green)' : 'var(--red)') + '">' + fmtNum(c.price, 4) + '</td>' +
+      '<td>' + (c.retest_type || '-') + '</td>' +
+      '<td style="' + statusCls + '">' + statusTxt + '</td>' +
+      '</tr>';
+  }
+  el = document.getElementById('prdTbS'); if (el) el.innerHTML = sHtml || '<tr><td colspan="8" class="dash-emp">暂无</td></tr>';
+
+  // --- short candidates ---
+  var kHtml = '';
+  for (var i = 0; i < shorts.length; i++) {
+    var c = shorts[i];
+    var roc = c.price && c.break_price ? ((c.price - c.break_price) / c.break_price * 100) : 0;
+    var statusTxt, statusCls;
+    if (!c.retest_time || !c.retest_type || c.retest_type.indexOf('待') >= 0) {
+      statusTxt = '⏳ 待反弹'; statusCls = 'color:var(--text-muted)';
+    } else if (c.retest_type.indexOf('BB') >= 0 || c.retest_type.indexOf('布林') >= 0) {
+      statusTxt = '✅ 布林反弹'; statusCls = 'color:var(--green)';
+    } else if (c.retest_type.indexOf('EMA') >= 0) {
+      statusTxt = '✅ EMA反弹'; statusCls = 'color:var(--green)';
+    } else {
+      statusTxt = '🔵 关注'; statusCls = 'color:var(--blue)';
+    }
+    var link = 'https://www.okx.com/zh-hans/trade-swap/' + c.coin.toLowerCase() + '-usdt-swap';
+    kHtml += '<tr>' +
+      '<td><strong><a href="' + link + '" target="_blank" class="u-link">' + escHtml(c.coin) + ' ↗</a></strong></td>' +
+      '<td>' + (c.score || '-') + '</td>' +
+      '<td>' + (c.break_time || '-') + '</td>' +
+      '<td>' + fmtNum(c.break_price, 4) + '</td>' +
+      '<td style="color:var(--red)">-' + (c.break_strength || 0).toFixed(2) + '%</td>' +
+      '<td style="color:' + (roc >= 0 ? 'var(--green)' : 'var(--red)') + '">' + fmtNum(c.price, 4) + '</td>' +
+      '<td>' + (c.retest_type || '-') + '</td>' +
+      '<td style="' + statusCls + '">' + statusTxt + '</td>' +
+      '</tr>';
+  }
+  el = document.getElementById('prdTbK'); if (el) el.innerHTML = kHtml || '<tr><td colspan="8" class="dash-emp">暂无</td></tr>';
+
+  // --- pending orders ---
+  var pHtml = '';
+  var ordKeys = Object.keys(orders);
+  for (var i = 0; i < ordKeys.length; i++) {
+    var o = orders[ordKeys[i]];
+    var dir = (o.direction || 'long').toUpperCase() === 'SHORT' ? '🔴 空' : '🟢 多';
+    pHtml += '<tr>' +
+      '<td><strong><a href="https://www.okx.com/zh-hans/trade-swap/' + (o.coin||'').toLowerCase() + '-usdt-swap" target="_blank" class="u-link">' + escHtml(o.coin||'') + ' ↗</a></strong></td>' +
+      '<td>' + dir + '</td>' +
+      '<td>' + fmtNum(o.entry_price || o.limit_price, 4) + '</td>' +
+      '<td>' + fmtNum(o.quantity, 4) + '</td>' +
+      '<td>' + (o.entry_time ? fmtTime(o.entry_time * 1000) : '-') + '</td>' +
+      '<td>' + fmtNum(o.tp_price, 4) + '</td>' +
+      '<td>' + fmtNum(o.sl_price, 4) + '</td>' +
+      '</tr>';
+  }
+  el = document.getElementById('prdTbP'); if (el) el.innerHTML = pHtml || '<tr><td colspan="7" class="dash-emp">暂无挂单</td></tr>';
+
+  // --- positions ---
+  var fHtml = '';
+  var posKeys = Object.keys(positions);
+  for (var i = 0; i < posKeys.length; i++) {
+    var o = positions[posKeys[i]];
+    var dir = (o.direction || 'long').toUpperCase() === 'SHORT' ? '🔴 空' : '🟢 多';
+    var curPx = o.current_price || '-';
+    var upnl = o.unrealized_pnl;
+    var upnlPct = o.unrealized_pnl_pct;
+    var upnlStr = '-';
+    if (upnl !== undefined && upnl !== null) {
+      upnlStr = '<span style="color:' + (upnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (upnl >= 0 ? '+' : '') + fmtNum(upnl) + '</span>';
+      if (upnlPct !== undefined && upnlPct !== null) {
+        upnlStr += ' <span style="color:' + (upnlPct >= 0 ? 'var(--green)' : 'var(--red)') + '">(' + (upnlPct >= 0 ? '+' : '') + fmtNum(upnlPct, 1) + '%)</span>';
+      }
+    }
+    fHtml += '<tr>' +
+      '<td><strong><a href="https://www.okx.com/zh-hans/trade-swap/' + (o.coin||'').toLowerCase() + '-usdt-swap" target="_blank" class="u-link">' + escHtml(o.coin||'') + ' ↗</a></strong></td>' +
+      '<td>' + dir + '</td>' +
+      '<td>' + fmtNum(o.entry_price, 4) + '</td>' +
+      '<td>' + fmtNum(o.quantity, 4) + '</td>' +
+      '<td>' + (typeof curPx === 'number' ? fmtNum(curPx, 4) : curPx) + '</td>' +
+      '<td>' + upnlStr + '</td>' +
+      '<td>' + fmtNum(o.tp_price, 4) + '</td>' +
+      '<td>' + fmtNum(o.sl_price, 4) + '</td>' +
+      '</tr>';
+  }
+  el = document.getElementById('prdTbF'); if (el) el.innerHTML = fHtml || '<tr><td colspan="8" class="dash-emp">暂无持仓</td></tr>';
+
+  // --- closed (按平仓时间倒序) ---
+  var cHtml = '';
+  var closedSorted = closed.slice().sort(function(a, b) {
+    var ta = a.close_time || 0, tb = b.close_time || 0;
+    return tb - ta;
+  });
+  for (var i = 0; i < closedSorted.length; i++) {
+    var o = closedSorted[i];
+    var dir = (o.direction || 'long').toUpperCase() === 'SHORT' ? '🔴 空' : '🟢 多';
+    var pnl = o.pnl || 0;
+    var pnlPct = o.pnl_pct || 0;
+    cHtml += '<tr>' +
+      '<td><strong><a href="https://www.okx.com/zh-hans/trade-swap/' + (o.coin||'').toLowerCase() + '-usdt-swap" target="_blank" class="u-link">' + escHtml(o.coin||'') + ' ↗</a></strong></td>' +
+      '<td>' + dir + '</td>' +
+      '<td>' + fmtNum(o.entry_price, 2) + '→' + fmtNum(o.close_price, 2) + '</td>' +
+      '<td style="color:' + (pnl >= 0 ? 'var(--green)' : 'var(--red)') + ';font-weight:500">' + (pnl >= 0 ? '+' : '') + fmtNum(pnl) + '</td>' +
+      '<td style="color:' + (pnlPct >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (pnlPct >= 0 ? '+' : '') + fmtNum(pnlPct, 1) + '%</td>' +
+      '<td>' + (o.reason || '-') + '</td>' +
+      '<td>' + (o.close_time_str || '-') + '</td>' +
+      '</tr>';
+  }
+  el = document.getElementById('prdTbC'); if (el) el.innerHTML = cHtml || '<tr><td colspan="7" class="dash-emp">暂无已平仓</td></tr>';
+}
+
 function fmtPrice(v) {
   if (!v) return '-';
   v = parseFloat(v);
@@ -2911,6 +3587,9 @@ function route() {
   else if (path === '/binance-danger') renderBinanceDanger();
   else if (path === '/bb-ride') renderBbRide();
   else if (path === '/bb-ride-exec') renderBbRideExec();
+  else if (path === '/bb-ride-exec-dashboard') renderBbRideExecDash();
+  else if (path === '/okx-bb-ride-exec-dashboard') renderBbRideExecDashOkx();
+  else if (path === '/push-retest-dashboard') renderBbRidePushRetestDash();
   else if (/^\/strategy\/(\d+)$/.test(path)) {
     const id = path.match(/^\/strategy\/(\d+)$/)[1];
     renderStrategyDetail(id);
@@ -2921,6 +3600,15 @@ function route() {
 
 window.addEventListener('popstate', route);
 document.addEventListener('DOMContentLoaded', route);
+
+// ── SPA 导航拦截（nav-link 点击不刷新页面） ──
+document.addEventListener('click', function(e) {
+  var link = e.target.closest('.nav-link');
+  if (link && link.hostname === window.location.hostname) {
+    e.preventDefault();
+    navigate(link.getAttribute('href'));
+  }
+});
 
 // ESC 关闭 modal（键盘无障碍）
 document.addEventListener('keydown', function(e) {

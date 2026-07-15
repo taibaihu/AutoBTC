@@ -11,6 +11,9 @@ import sys, time, logging, json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+# 添加父目录（支持从 OKX-Ride 子文件夹启动）
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import pymysql
 from pymysql.cursors import DictCursor
 import ccxt

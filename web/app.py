@@ -5,7 +5,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 
 # 将项目根目录加入 path, 复用 db_manager
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2164,6 +2164,214 @@ def api_dashboard():
         return json_err(str(e))
 
 
+# ── QuantDinger AI 分析代理 ──────────────────────────────────
+
+_QDINGER_TOKEN_CACHE = Path(__file__).parent / "api_cache" / "quantdinger_token.json"
+
+
+def _get_qdinger_token():
+    """获取 QuantDinger API token（文件缓存，跨 gunicorn worker 共享）"""
+    import requests as _req
+    now = time.time()
+
+    # 尝试从文件缓存读取
+    try:
+        if _QDINGER_TOKEN_CACHE.exists():
+            fc = json.loads(_QDINGER_TOKEN_CACHE.read_text(encoding="utf-8"))
+            if now < fc.get("expiry", 0):
+                token = fc.get("token", "")
+                if token:
+                    return token
+    except Exception:
+        pass
+
+    # 重新登录
+    try:
+        resp = _req.post(
+            "http://127.0.0.1:5001/api/auth/login",
+            json={"username": "quantdinger", "password": "1111aaaaAAAA!!!!"},
+            timeout=10,
+        )
+        data = resp.json()
+        token = data.get("data", {}).get("token", "")
+        if token:
+            _QDINGER_TOKEN_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            _QDINGER_TOKEN_CACHE.write_text(
+                json.dumps({"token": token, "expiry": now + 3540}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            print(f"[QDinger] Token acquired ({token[:20]}...)")
+            return token
+        print(f"[QDinger] Token error: no token in response")
+    except Exception as e:
+        print(f"[QDinger] Token error: {e}")
+    return ""
+
+
+def _qdinger_proxy(api_path: str, method="GET", body=None, timeout=30):
+    """代理请求到 QuantDinger 后端"""
+    import requests as _req
+    token = _get_qdinger_token()
+    if not token:
+        return json_err("QuantDinger API 认证失败", http_status=502)
+    url = f"http://127.0.0.1:5001/api/{api_path}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    try:
+        if method == "GET":
+            resp = _req.get(url, params=request.args, headers=headers, timeout=timeout)
+        else:
+            resp = _req.post(url, json=body or request.get_json(), headers=headers, timeout=timeout)
+        return jsonify(resp.json())
+    except _req.exceptions.Timeout:
+        return json_err("QuantDinger API 超时", http_status=504)
+    except Exception as e:
+        return json_err(f"QuantDinger API 错误: {e}", http_status=502)
+
+
+@app.route("/ai-analysis")
+def ai_analysis_page():
+    """QuantDinger AI 智能分析页面"""
+    return send_from_directory("static", "ai_analysis.html")
+
+
+@app.route("/api/quantdinger/fast-analysis/analyze", methods=["POST"])
+def quantdinger_analyze():
+    """提交 AI 分析"""
+    return _qdinger_proxy("fast-analysis/analyze", method="POST", timeout=120)
+
+
+@app.route("/api/quantdinger/<path:qd_subpath>", methods=["GET", "POST"])
+def quantdinger_proxy(qd_subpath):
+    """通用 QuantDinger API 代理"""
+    method = "POST" if request.method == "POST" else "GET"
+    timeout = 120 if "analyze" in qd_subpath else 30
+    return _qdinger_proxy(qd_subpath, method=method, timeout=timeout)
+
+
+# 确保 /api/quantdinger 本身不会匹配到下面的 catch-all
+@app.route("/api/quantdinger")
+def quantdinger_proxy_root():
+    return json_err("QuantDinger API root - use /api/quantdinger/<path>")
+
+
+# ── BB Ride 布林骑行扫描 ──────────────────────────────────
+
+
+@app.route("/api/bb-ride")
+def api_bb_ride():
+    """查询底部启动扫描结果（币安）"""
+    try:
+        from db_manager import fetch_all
+        rows = fetch_all(
+            "SELECT * FROM bb_ride_scanner ORDER BY score DESC, rise_pct DESC",
+            db="ll_test"
+        )
+        return json_ok({"results": rows, "scan_time": rows[0]["scan_time"].strftime("%Y-%m-%d %H:%M:%S") if rows else None})
+    except Exception as e:
+        return json_err(f"查询失败: {e}")
+
+
+@app.route("/api/bb-ride/okx")
+def api_bb_ride_okx():
+    """查询OKX底部启动扫描结果（从数据库读取）"""
+    try:
+        from db_manager import fetch_all
+        rows = fetch_all(
+            "SELECT * FROM bb_ride_scanner_okx ORDER BY score DESC, rise_pct DESC",
+            db="ll_test"
+        )
+        return json_ok({"results": rows, "scan_time": rows[0]["scan_time"].strftime("%Y-%m-%d %H:%M:%S") if rows else None})
+    except Exception as e:
+        return json_err(f"查询失败: {e}")
+
+
+@app.route("/api/bb-ride/history")
+def api_bb_ride_history():
+    """查询某个币的扫描历史"""
+    coin = request.args.get("coin", "")
+    if not coin:
+        return json_err("Need coin param")
+    try:
+        from db_manager import fetch_all
+        rows = fetch_all(
+            "SELECT * FROM bb_ride_scanner WHERE coin=%s ORDER BY scan_time DESC LIMIT 50",
+            (coin,),
+            db="ll_test"
+        )
+        return json_ok(rows)
+    except Exception as e:
+        return json_err(f"查询失败: {e}")
+
+
+@app.route("/bb-ride")
+def bb_ride_page():
+    return send_from_directory("static", "index.html")
+
+
+# ── BB-Ride 执行策略 API ──────────────────────────────────
+
+@app.route("/api/bb-ride-execution")
+def api_bb_ride_execution():
+    """查询BB-Ride执行策略的订单/持仓/已平仓状态"""
+    try:
+        state_path = Path(__file__).parent.parent / "bb_ride_state.json"
+        if not state_path.exists():
+            return json_ok({"orders": {}, "positions": {}, "closed_positions": []})
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        now = time.time()
+        for key, o in state.get("orders", {}).items():
+            o["age_hours"] = round((now - o["placed_at"]) / 3600, 1)
+            o["placed_at_str"] = datetime.fromtimestamp(o["placed_at"], tz=timezone(timedelta(hours=8))).strftime("%m-%d %H:%M")
+            o["key"] = key
+        for key, p in state.get("positions", {}).items():
+            p["filled_at_str"] = datetime.fromtimestamp(p["filled_at"], tz=timezone(timedelta(hours=8))).strftime("%m-%d %H:%M") if p.get("filled_at") else "-"
+            p["key"] = key
+        for c in state.get("closed_positions", []):
+            if c.get("filled_at"):
+                c["filled_at_str"] = datetime.fromtimestamp(c["filled_at"], tz=timezone(timedelta(hours=8))).strftime("%m-%d %H:%M")
+            if c.get("close_time"):
+                c["close_time_str"] = datetime.fromtimestamp(c["close_time"], tz=timezone(timedelta(hours=8))).strftime("%m-%d %H:%M")
+        return json_ok(state)
+    except Exception as e:
+        return json_err(str(e))
+
+
+@app.route("/api/bb-ride-execution/stats")
+def api_bb_ride_execution_stats():
+    """BB-Ride执行策略统计"""
+    try:
+        state_path = Path(__file__).parent.parent / "bb_ride_state.json"
+        if not state_path.exists():
+            return json_ok({"long_orders": 0, "short_orders": 0, "long_positions": 0, "short_positions": 0, "total_closed": 0, "pnl_total": 0})
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        orders = state.get("orders", {})
+        positions = state.get("positions", {})
+        closed_arr = state.get("closed_positions", []) or []
+        ts = state.get("total_stats", {}) or {}
+        # 取较大值：total_stats可能从某个时间点才开始记录
+        total_closed = max(ts.get("trades", 0), len(closed_arr))
+        wins_from_arr = sum(1 for c in closed_arr if c.get("pnl", 0) > 0)
+        total_wins = max(ts.get("wins", 0), wins_from_arr)
+        pnl_from_arr = sum(c.get("pnl", 0) or 0 for c in closed_arr)
+        total_pnl = ts.get("pnl", 0) if abs(ts.get("pnl", 0)) > abs(pnl_from_arr) else pnl_from_arr
+        stats = {
+            "long_orders": sum(1 for k in orders if k.startswith("LONG:")),
+            "short_orders": sum(1 for k in orders if k.startswith("SHORT:")),
+            "long_positions": sum(1 for k in positions if k.startswith("LONG:")),
+            "short_positions": sum(1 for k in positions if k.startswith("SHORT:")),
+            "total_closed": total_closed,
+            "total_wins": total_wins,
+            "pnl_total": total_pnl,
+            "processed_signals": sum(len(v) for v in state.get("processed_signals", {}).values()),
+        }
+        return json_ok(stats)
+    except Exception as e:
+        return json_err(str(e))
+
+
 # ── 入口 ────────────────────────────────────────────────────
 
 
@@ -2181,6 +2389,13 @@ def main():
     print(f"   策略列表: http://{host}:{port}/api/strategies")
 
     app.run(host=host, port=port, debug=debug)
+
+
+@app.route("/push-retest-dashboard")
+@app.route("/bb-ride-exec-dashboard")
+def dash_spa_pages():
+    """骑行/推土机面板已合并进 SPA，统一返回 index.html 由前端路由处理"""
+    return send_from_directory("static", "index.html")
 
 
 @app.route("/<path:filename>")
@@ -2203,5 +2418,216 @@ def web_root_files(filename):
     return jsonify({"code": 404, "msg": "Not Found"}), 404
 
 
+@app.route("/api/bb-ride-execution/okx")
+def api_bb_ride_execution_okx():
+    """查询OKX BB-Ride执行策略状态"""
+    try:
+        state_path = Path(__file__).parent.parent / "bb_ride_okx_state.json"
+        if not state_path.exists():
+            return json_ok({"orders": {}, "positions": {}, "closed_positions": []})
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        now = time.time()
+        for key, o in state.get("orders", {}).items():
+            o["age_hours"] = round((now - o["placed_at"]) / 3600, 1)
+            o["placed_at_str"] = datetime.fromtimestamp(o["placed_at"], tz=timezone(timedelta(hours=8))).strftime("%m-%d %H:%M")
+            o["key"] = key
+        for key, p in state.get("positions", {}).items():
+            p["filled_at_str"] = datetime.fromtimestamp(p["filled_at"], tz=timezone(timedelta(hours=8))).strftime("%m-%d %H:%M") if p.get("filled_at") else "-"
+            p["key"] = key
+        for c in state.get("closed_positions", []):
+            if c.get("filled_at"):
+                c["filled_at_str"] = datetime.fromtimestamp(c["filled_at"], tz=timezone(timedelta(hours=8))).strftime("%m-%d %H:%M")
+            if c.get("close_time"):
+                c["close_time_str"] = datetime.fromtimestamp(c["close_time"], tz=timezone(timedelta(hours=8))).strftime("%m-%d %H:%M")
+        return json_ok(state)
+    except Exception as e:
+        return json_err(str(e))
+
+
 if __name__ == "__main__":
     main()
+
+
+@app.route("/api/bb-ride/breakout")
+def api_bb_ride_breakout():
+    """查询OKX V型反转突破结果"""
+    try:
+        path = Path(__file__).parent.parent / "okx_breakout_results.json"
+        if not path.exists():
+            return json_ok({"results": [], "scan_time": None})
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return json_ok({"results": data.get("signals", []), "scan_time": data.get("scan_time")})
+    except Exception as e:
+        return json_err(f"读取突破结果失败: {e}")
+
+
+@app.route("/api/bb-ride/wave")
+def api_bb_ride_wave():
+    """查询OKX波浪向上攀升扫描结果"""
+    try:
+        path = Path(__file__).parent.parent / "okx_wave_results.json"
+        if not path.exists():
+            return json_ok({"results": [], "scan_time": None})
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return json_ok({"results": data.get("results", []), "scan_time": data.get("scan_time")})
+    except Exception as e:
+        return json_err(f"读取波浪结果失败: {e}")
+
+
+@app.route("/api/bb-ride/push-retest")
+def api_bb_ride_push_retest():
+    """查询OKX推土机突破→深回踩结果，支持?date=2026-07-08参数"""
+    try:
+        base = Path(__file__).parent.parent
+        date = request.args.get("date", "")
+        if date:
+            path = base / f"okx_push_retest_results_{date}.json"
+            if not path.exists():
+                path = base / "okx_push_retest_results.json"
+        else:
+            path = base / "okx_push_retest_results.json"
+        if not path.exists():
+            return json_ok({"results": [], "scan_time": None})
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return json_ok({"results": data.get("results", []), "scan_time": data.get("scan_time")})
+    except Exception as e:
+        return json_err(f"读取失败: {e}")
+
+
+@app.route("/api/bb-ride-execution/push-retest")
+def api_bb_ride_execution_push_retest():
+    """查询推土机突破策略的交易状态"""
+    try:
+        state_path = Path(__file__).parent.parent / "okx_push_retest_exec_state.json"
+        if not state_path.exists():
+            return json_ok({"traded_coins": {}, "positions": {}, "closed_positions": []})
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        
+        trades = state.get("traded_coins", {})
+        positions = {}
+        closed = []
+        bj = timezone(timedelta(hours=8))
+        
+        for key, t in trades.items():
+            dir_val = (t.get("direction", "long") or "long").upper()
+            if t.get("status") == "filled" and not t.get("closed"):
+                pos = {
+                    "coin": t["coin"],
+                    "direction": dir_val,
+                    "entry_price": t.get("entry_price", 0),
+                    "quantity": t.get("quantity", 0),
+                    "filled_at_str": datetime.fromtimestamp(t.get("entry_time", 0), tz=bj).strftime("%m-%d %H:%M") if t.get("entry_time") else "-",
+                    "tp_price": t.get("tp_price", 0),
+                    "sl_price": t.get("sl_price", 0),
+                }
+                # 尝试获取实时盈亏
+                try:
+                    ex = ccxt.okx({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+                    ticker = ex.fetch_ticker(f"{t['coin']}/USDT:USDT")
+                    cur = float(ticker.get("last", 0))
+                    entry = t.get("entry_price", 0)
+                    qty = t.get("quantity", 0)
+                    if cur > 0 and entry > 0 and qty > 0:
+                        pos["current_price"] = cur
+                        cs = 1
+                        try:
+                            m = ex.market(f"{t['coin']}/USDT:USDT")
+                            cs = float(m.get("contractSize", 1) or 1)
+                        except: pass
+                        if dir_val == "SHORT":
+                            pos["unrealized_pnl"] = round((entry - cur) * qty * cs, 2)
+                            pos["unrealized_pnl_pct"] = round((1 - cur / entry) * 100, 2)
+                        else:
+                            pos["unrealized_pnl"] = round((cur - entry) * qty * cs, 2)
+                            pos["unrealized_pnl_pct"] = round((cur / entry - 1) * 100, 2)
+                except:
+                    pass
+                positions[key] = pos
+            elif t.get("closed"):
+                entry_px = float(t.get("entry_price", 0) or 0)
+                qty = float(t.get("quantity", 0) or 0)
+                close_px = float(t.get("close_price", 0) or 0)
+                pnl = float(t.get("close_pnl", 0) or 0)
+                # 计算真实盈亏%
+                if entry_px > 0 and close_px > 0:
+                    price_change = (close_px - entry_px) / entry_px * 100
+                    if dir_val == "SHORT":
+                        price_change = -price_change
+                    pnl_pct = round(price_change, 2)
+                else:
+                    # 没有平仓价，用订单金额 500U 反推 pnl%
+                    pnl_pct = round(pnl / 500 * 100, 2) if pnl else 0
+                closed.append({
+                    "coin": t["coin"],
+                    "direction": dir_val,
+                    "entry_price": entry_px,
+                    "close_price": close_px,
+                    "quantity": qty,
+                    "pnl": pnl,
+                    "pnl_pct": pnl_pct,
+                    "filled_at_str": datetime.fromtimestamp(t.get("entry_time", 0), tz=bj).strftime("%m-%d %H:%M") if t.get("entry_time") else "-",
+                    "close_time_str": datetime.fromtimestamp(t.get("close_time", 0), tz=bj).strftime("%m-%d %H:%M") if t.get("close_time") else "-",
+                    "reason": t.get("close_reason", ""),
+                })
+            elif t.get("status") == "pending":
+                positions[key] = {
+                    "coin": t["coin"],
+                    "direction": dir_val,
+                    "limit_price": t.get("entry_price", 0),
+                    "status": "pending",
+                    "filled_at_str": "-",
+                }
+        
+        wins = sum(1 for c in closed if c.get("pnl", 0) > 0)
+        total_pnl = sum(c.get("pnl", 0) for c in closed)
+        closed.sort(key=lambda x: x.get("close_time_str", ""), reverse=True)
+        return json_ok({
+            "orders": {k: v for k, v in positions.items() if v.get("status") == "pending"},
+            "positions": {k: v for k, v in positions.items() if v.get("status") != "pending"},
+            "closed_positions": closed,
+            "total_stats": {"trades": len(closed), "wins": wins, "pnl": round(total_pnl, 2)},
+        })
+    except Exception as e:
+        return json_err(str(e))
+
+
+@app.route("/api/push-retest/balance")
+def api_push_retest_balance():
+    """查询OKX推土机账户余额"""
+    try:
+        ex = ccxt.okx({
+            "apiKey": os.environ.get("OKX_API_KEY"),
+            "secret": os.environ.get("OKX_SECRET_KEY"),
+            "password": os.environ.get("OKX_PASSPHRASE"),
+            "enableRateLimit": True,
+            "options": {"defaultType": "swap"},
+        })
+        bal = ex.fetch_balance()
+        usdt = bal.get("USDT", {})
+        usdt_total = float(usdt.get("total", 0))
+        usdt_free = float(usdt.get("free", 0))
+        positions = ex.fetch_positions()
+        pos_count = 0
+        total_upnl = 0.0
+        for p in positions:
+            sz = abs(float(p.get("contracts", 0) or 0))
+            if sz > 0.000001:
+                pos_count += 1
+                total_upnl += float(p.get("unrealizedPnl", 0) or 0)
+        total_equity = usdt_total + total_upnl
+        return json_ok({
+            "usdt_equity": round(usdt_total, 2),
+            "equity": round(total_equity, 2),
+            "unrealized_pnl": round(total_upnl, 2),
+            "pos_count": pos_count,
+            "margin_ratio": "-",
+        })
+    except Exception as e:
+        return json_ok({
+            "usdt_equity": 0,
+            "equity": 0,
+            "unrealized_pnl": 0,
+            "pos_count": 0,
+            "margin_ratio": "-",
+            "error": str(e),
+        })

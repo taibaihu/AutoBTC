@@ -21,7 +21,7 @@ from config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD
 
 logger = logging.getLogger("BB_Ride_OKX_Exe")
 
-ORDER_AMOUNT = 100         # USDT
+ORDER_AMOUNT = 200         # USDT
 MAX_LONG_ORDERS = 3
 MAX_SHORT_ORDERS = 2      # 最多同时2空单（回测显示空单胜率低），总计最多5单
 TP_PCT = 0.05
@@ -87,7 +87,7 @@ class BbRideOkxStrategy:
         else:
             logger.warning("OKX API 密钥未配置（仅展示模式）")
 
-        self.data_file = str(Path(__file__).parent / "bb_ride_okx_state.json")
+        self.data_file = str(Path(__file__).parent.parent / "bb_ride_okx_state.json")
         self.state = self._load_state()
         self._cleanup_counter = 0
 
