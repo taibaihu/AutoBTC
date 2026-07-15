@@ -12,19 +12,23 @@ from dotenv import load_dotenv
 # 加载 .env 中的 OKX 密钥
 load_dotenv(Path(__file__).parent / ".env")
 
+import pymysql
+from pymysql.cursors import DictCursor
 import ccxt
 
 from config import OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSPHRASE
+from config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD
 
 logger = logging.getLogger("BB_Ride_OKX_Exe")
 
-ORDER_AMOUNT = 200         # USDT
+ORDER_AMOUNT = 100         # USDT
 MAX_LONG_ORDERS = 3
-MAX_SHORT_ORDERS = 2      # 最多同时2空单（含持仓，回测显示空单胜率低）
+MAX_SHORT_ORDERS = 2      # 最多同时2空单（回测显示空单胜率低），总计最多5单
 TP_PCT = 0.05
 SL_PCT = 0.025
 CLOSE_AFTER_HOURS = 2.5
 CLOSE_AT_PROFIT_PCT = 0.8
+LEVERAGE = 20
 CHECK_INTERVAL = 10
 SIGNAL_WINDOW_HOURS = 6
 BB_PERIOD = 14
@@ -41,7 +45,7 @@ WINDOW_CANDLES = 15
 
 # ===== 模拟模式 =====
 # True = 只打日志不下单，False = 实盘交易
-PAPER_TRADING = True  # 与OKX扫描器一致
+PAPER_TRADING = False
 
 
 class BbRideOkxStrategy:
@@ -96,9 +100,6 @@ class BbRideOkxStrategy:
     def _load_tradfi_blacklist(self) -> set:
         """从数据库 okx_swap_coins 表加载 TradFi 分类币种"""
         try:
-            from config import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD
-            import pymysql
-            from pymysql.cursors import DictCursor
             conn = pymysql.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASSWORD, database='ll_test', cursorclass=DictCursor, connect_timeout=5)
             cur = conn.cursor()
             cur.execute("SELECT coin FROM okx_swap_coins WHERE category = 'TradFi'")
@@ -650,59 +651,40 @@ class BbRideOkxStrategy:
         except Exception as e:
             logger.warning(f"同步持仓失败: {e}")
 
-    # ── 信号（从 OKX 扫描器 JSON 文件读取）──
+    # ── 信号（从 bb_ride_scanner_okx 表读取）──
     def fetch_new_signals(self) -> list:
         today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
         processed = set(self.state.get("processed_signals", {}).get(today, []))
-        now_ts = datetime.now(timezone.utc).timestamp()
 
         try:
-            result_file = Path(__file__).parent / "bb_ride_scanner_okx_results.json"
-            if not result_file.exists():
-                return []
-            data = json.loads(result_file.read_text(encoding="utf-8"))
-            signals = data.get("signals", [])
+            conn = pymysql.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASSWORD, database='ll_test', cursorclass=DictCursor, connect_timeout=5)
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, coin, current_price, direction, signal_time, score
+                FROM bb_ride_scanner_okx
+                WHERE signal_time >= NOW() - INTERVAL 6 HOUR
+                ORDER BY signal_time DESC
+            """)
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+
+            new_sigs = [r for r in rows if r["id"] not in processed]
+            if new_sigs:
+                up_coins = [r["coin"] for r in new_sigs if r["direction"] == "up"]
+                down_coins = [r["coin"] for r in new_sigs if r["direction"] == "down"]
+                parts = []
+                if up_coins:
+                    parts.append(f"多{len(up_coins)}条-币种{','.join(up_coins[:5])}")
+                if down_coins:
+                    parts.append(f"空{len(down_coins)}条-币种{','.join(down_coins[:5])}")
+                logger.info(f"📡 {len(new_sigs)}条 ({'，'.join(parts)})")
+            return new_sigs
         except Exception as e:
-            logger.error(f"读取OKX扫描结果失败: {e}")
+            logger.error(f"获取OKX信号失败: {e}")
             return []
 
-        # 信号有效期6小时，计算signal_time
-        new_sigs = []
-        for s in signals:
-            # 用 coin+方向+日期 做去重key
-            date_key = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
-            sig_key = f"{s['coin']}|{s['direction']}|{date_key}"
-            if sig_key in processed:
-                continue
-
-            # 估算 signal_time = pattern_start_bj + 3h45m
-            if not s.get("pattern_start_bj"):
-                continue
-            try:
-                start = datetime.strptime(str(s["pattern_start_bj"])[:19], "%Y-%m-%d %H:%M:%S")
-            except:
-                continue
-            signal_time = start + timedelta(minutes=WINDOW_CANDLES * 15)
-            # 只取6小时内
-            if (datetime.now(timezone.utc) - signal_time.replace(tzinfo=timezone.utc)).total_seconds() > 6 * 3600:
-                continue
-
-            new_sigs.append({
-                "id": sig_key,
-                "coin": s["coin"],
-                "current_price": s.get("current_price", 0),
-                "direction": "up" if s.get("direction") == "up" else "down",
-                "signal_time": signal_time,
-                "score": s.get("score", 0),
-            })
-
-        if new_sigs:
-            up = [r["coin"] for r in new_sigs if r["direction"] == "up"]
-            down = [r["coin"] for r in new_sigs if r["direction"] == "down"]
-            logger.info(f"📡 {len(new_sigs)}条 (多{len(up)}条 {','.join(up[:5])} / 空{len(down)}条 {','.join(down[:5])})")
-        return new_sigs
-
-    def mark_processed(self, signal_id: str):
+    def mark_processed(self, signal_id: int):
         today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
         if today not in self.state["processed_signals"]:
             self.state["processed_signals"][today] = []
@@ -880,7 +862,7 @@ class BbRideOkxStrategy:
         logger.info("🤖 BB-Ride OKX 执行策略启动")
         if not self.api_ready:
             logger.info("   ⚠️  展示模式：仅显示信号，需要有效OKX API密钥才能交易")
-        logger.info(f"   每单 {ORDER_AMOUNT} USDT  限价入场(偏移{ENTRY_OFFSET*100:.1f}%) TP+{TP_PCT*100:.0f}% / SL-{SL_PCT*100:.1f}%")
+        logger.info(f"   每单 {ORDER_AMOUNT} USDT  {LEVERAGE}x杠杆  限价入场(偏移{ENTRY_OFFSET*100:.1f}%) TP+{TP_PCT*100:.0f}% / SL-{SL_PCT*100:.1f}%")
         logger.info(f"   信号窗口 {SIGNAL_WINDOW_HOURS}h  {MA_TIMEFRAME}MA{MA_PERIOD}方向过滤 + 5m布林线({BB_PERIOD},{BB_STD})触碰限价入场")
         logger.info(f"   连亏{MAX_CONSECUTIVE_LOSSES}次自动屏蔽{BLACKLIST_HOURS}h")
         logger.info(f"   多单上限 {MAX_LONG_ORDERS}  空单上限 {MAX_SHORT_ORDERS}")
@@ -898,6 +880,14 @@ class BbRideOkxStrategy:
             logger.info(f"回填累计统计: {trades}单 {wins}胜 PnL={pnl:.2f}")
 
         self.sync_exchange_positions()
+
+        # 设置默认杠杆
+        if self.api_ready:
+            try:
+                self.exchange.privatePostSetLeverage({"instId": "all", "lever": str(LEVERAGE), "mgnMode": "cross"})
+                logger.info(f"⚙️ 默认杠杆设定为 {LEVERAGE}x")
+            except Exception as e:
+                logger.warning(f"设定默认杠杆失败: {e}")
 
         # 重挂TP/SL
         for key, pos in list(self.state.get("positions", {}).items()):

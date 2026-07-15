@@ -11,9 +11,19 @@ import sys, time, logging, json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+import pymysql
+from pymysql.cursors import DictCursor
 import ccxt
 
 from config import OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSPHRASE
+
+DB_CONFIG = {
+    "host": "rm-j6cn8z161cj4lil55to.mysql.rds.aliyuncs.com",
+    "port": 3306,
+    "user": "bitgetok",
+    "password": "bitgetOk123",
+    "database": "ll_test",
+}
 
 TIMEFRAME = "15m"
 WINDOW_CANDLES = 15
@@ -151,6 +161,101 @@ def check_window(candles, direction="up"):
     return results
 
 
+def _ensure_table():
+    """确保 bb_ride_scanner_okx 表存在"""
+    try:
+        conn = pymysql.connect(**DB_CONFIG, cursorclass=DictCursor, connect_timeout=5)
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS bb_ride_scanner_okx (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                coin VARCHAR(20) NOT NULL,
+                scan_time DATETIME NOT NULL,
+                current_price DECIMAL(20,8),
+                bb_mid DECIMAL(20,8) DEFAULT 0,
+                bb_upper DECIMAL(20,8) DEFAULT 0,
+                bb_lower DECIMAL(20,8) DEFAULT 0,
+                pct_from_mid DECIMAL(10,4) DEFAULT 0,
+                pattern_start_bj DATETIME,
+                pattern_day DATE,
+                rise_pct DECIMAL(10,4),
+                volume_24h DECIMAL(20,2),
+                volume_ratio DECIMAL(10,4) DEFAULT 0,
+                trend_1h VARCHAR(10) DEFAULT '',
+                score INT DEFAULT 0,
+                direction VARCHAR(10) DEFAULT 'up',
+                signal_time DATETIME,
+                INDEX idx_coin_day (coin, pattern_day, direction),
+                INDEX idx_signal_time (signal_time)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+        conn.close()
+        logger.info("✅ 确保 bb_ride_scanner_okx 表存在")
+    except Exception as e:
+        logger.warning(f"建表失败: {e}")
+
+
+def save_to_db(rows: list):
+    """保存扫描结果到 bb_ride_scanner_okx 表，供策略读取"""
+    if not rows:
+        logger.info("💾 无新数据写入")
+        return
+    try:
+        conn = pymysql.connect(**DB_CONFIG, cursorclass=DictCursor)
+        cur = conn.cursor()
+        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        now_bj = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+        cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+
+        cur.execute(
+            "SELECT coin, pattern_day, direction FROM bb_ride_scanner_okx WHERE scan_time >= %s",
+            (cutoff_24h,)
+        )
+        existing_days = set()
+        for r in cur.fetchall():
+            existing_days.add(f"{r['coin']}|{r['pattern_day']}|{r.get('direction','up')}")
+
+        inserted = 0
+        skipped = 0
+        sql = """INSERT INTO bb_ride_scanner_okx
+            (coin, scan_time, current_price, bb_mid, bb_upper, bb_lower,
+             pct_from_mid, pattern_start_bj, pattern_day, rise_pct, volume_24h, volume_ratio, trend_1h, score, direction, signal_time)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+
+        for r in rows:
+            # 高价过滤: 价格>100USDT 不参与底部启动
+            if r['current_price'] and float(r['current_price']) > 100:
+                continue
+            date_key = r["pattern_start_bj"].strftime("%Y-%m-%d")
+            key = f"{r['coin']}|{date_key}|{r.get('direction','up')}"
+            if key in existing_days:
+                skipped += 1
+                continue
+
+            start_full = r["pattern_start_bj"].strftime("%Y-%m-%d %H:%M:%S")
+            # 发现时间 = 开始时间 + 15根K线
+            signal_bj = r["pattern_start_bj"] + timedelta(minutes=WINDOW_CANDLES * 15)
+            signal_bj_str = signal_bj.strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                cur.execute(sql, (
+                    r["coin"], now_utc, r["current_price"], 0, 0, 0,
+                    r["max_extreme"], start_full, date_key,
+                    r["rise_pct"], r["volume_24h"], r["match_count"], "",
+                    min(r["score"], 5), r.get("direction", "up"),
+                    signal_bj_str,
+                ))
+                inserted += 1
+            except Exception:
+                skipped += 1
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"💾 写入 bb_ride_scanner_okx {inserted} 条（跳过 {skipped} 条重复）")
+    except Exception as e:
+        logger.error(f"数据库写入失败: {e}")
+
+
 def save_results(results: list):
     """保存扫描结果到JSON文件，供前端读取"""
     data = {
@@ -172,6 +277,9 @@ def main():
     logger.info(f"   阳线: ≥{MIN_BULLISH}/{WINDOW_CANDLES}阳 单根涨幅≤{MAX_CANDLE_SURGE*100}%")
     logger.info(f"   阴线: ≥{MIN_BULLISH}/{WINDOW_CANDLES}阴 单根跌幅≤{MAX_CANDLE_SURGE*100}%")
     logger.info(f"   量≥{MIN_24H_VOL/1e6:.0f}M TOP{TOP_N} TradFi过滤")
+
+    # 确保数据库表存在
+    _ensure_table()
 
     # OKX 永续合约，无需 API Key 也可扫公开数据
     ex = ccxt.okx({
@@ -279,6 +387,7 @@ def main():
                         f"{r['score']}/5 {'★'*r['score']}  ${r['volume_24h']/1e6:.0f}M")
 
     save_results(deduped)
+    save_to_db(deduped)
 
 
 if __name__ == "__main__":
