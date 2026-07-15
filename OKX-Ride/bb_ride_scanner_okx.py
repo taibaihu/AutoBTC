@@ -393,5 +393,127 @@ def main():
     save_to_db(deduped)
 
 
+def run_loop():
+    """持续循环运行扫描"""
+    SCAN_INTERVAL = 15 * 60  # 15分钟
+    logger.info("⏰ 扫描器进入持续循环模式，每15分钟扫描一次")
+    while True:
+        try:
+            scan_cycle()
+            logger.info(f"💤 等待{SCAN_INTERVAL/60:.0f}分钟后下次扫描...")
+        except Exception as e:
+            logger.error(f"扫描异常: {e}", exc_info=True)
+        time.sleep(SCAN_INTERVAL)
+
+
+def scan_cycle():
+    """单次扫描逻辑（从main拆出）"""
+    global TRADFI_BLACKLIST
+    ex = ccxt.okx({
+        "enableRateLimit": True,
+        "options": {"defaultType": "swap"},
+    })
+    ex.load_markets()
+
+    symbols = [s for s in ex.symbols if s.endswith("/USDT:USDT")]
+
+    try:
+        tickers = ex.fetch_tickers()
+        time.sleep(0.5)
+    except Exception as e:
+        logger.warning(f"获取tickers失败: {e}")
+        tickers = {}
+
+    vol_list = []
+    for s in symbols:
+        coin = s.split("/")[0]
+        if is_tradfi(coin):
+            continue
+        if coin in LARGE_CAP_FILTER:
+            continue
+        t = tickers.get(s)
+        if not t:
+            continue
+        info = t.get("info", {}); base_vol = float(info.get("volCcy24h", 0) or 0)
+        last = float(t.get("last", 0) or 0)
+        vol = base_vol * last
+        if vol <= 0:
+            continue
+        vol_list.append((coin, s, vol))
+
+    vol_list.sort(key=lambda x: -x[2])
+    scan_list = vol_list[:TOP_N]
+
+    logger.info(f"过滤TradFi后取前{TOP_N}名")
+    if scan_list:
+        logger.info(f"  第1名: {scan_list[0][0]} ${scan_list[0][2]/1e6:.0f}M")
+        logger.info(f"  第{TOP_N}名: {scan_list[-1][0]} ${scan_list[-1][2]/1e6:.0f}M")
+
+    all_results = []
+    errors = 0
+
+    for idx, (coin, symbol, volume) in enumerate(scan_list):
+        sys.stdout.write(f"\r  扫描: {idx+1}/{len(scan_list)}  {coin}  Vol=${volume/1e6:.0f}M")
+        sys.stdout.flush()
+
+        try:
+            candles = ex.fetch_ohlcv(symbol, TIMEFRAME, limit=FETCH_LIMIT)
+            time.sleep(0.12)
+        except Exception:
+            errors += 1
+            time.sleep(0.15)
+            continue
+
+        if not candles or len(candles) < WINDOW_CANDLES + 1:
+            continue
+
+        last_close = candles[-1][4]
+        if last_close > 100:
+            continue
+
+        for direction in ("up", "down"):
+            windows = check_window(candles, direction=direction)
+            for w in windows:
+                w["coin"] = coin
+                w["volume_24h"] = volume
+                all_results.append(w)
+
+    print()
+    logger.info(f"扫描完成，共发现 {len(all_results)} 个形态窗口，{errors}个错误")
+
+    # 去重
+    best_per_coin_day = {}
+    for r in all_results:
+        dkey = r["pattern_start_bj"].strftime("%Y-%m-%d")
+        key = (r["coin"], dkey, r.get("direction", "up"))
+        if key not in best_per_coin_day:
+            best_per_coin_day[key] = r
+        else:
+            ex_rec = best_per_coin_day[key]
+            if r["score"] > ex_rec["score"]:
+                best_per_coin_day[key] = r
+
+    deduped = list(best_per_coin_day.values())
+    logger.info(f"按币种+天+方向去重后: {len(deduped)} 条")
+
+    deduped.sort(key=lambda r: (r["pattern_start_bj"], r.get("direction", "")))
+
+    if deduped:
+        logger.info(f"\n{'='*80}")
+        logger.info(f"OKX 扫描结果:")
+        logger.info(f"{'币种':<8} {'方向':<6} {'窗口(北京)':<22} {'匹配':<6} {'涨跌幅%':<8} {'单根最大%':<10} {'评分':<6} {'24h量':<10}")
+        logger.info("-" * 80)
+        for r in deduped:
+            start = r["pattern_start_bj"].strftime("%m/%d %H:%M")
+            end = r["pattern_end_bj"].strftime("%H:%M")
+            dir_icon = "🟢阳" if r["direction"] == "up" else "🔴阴"
+            logger.info(f"{r['coin']:<8} {dir_icon:<6} {start}-{end:<13} {r['match_count']}/{WINDOW_CANDLES} {r['rise_pct']:<+7.2f}% {r['max_extreme']:<+7.2f}% "
+                        f"{r['score']}/5 {'★'*r['score']}  ${r['volume_24h']/1e6:.0f}M")
+
+    save_results(deduped)
+    save_to_db(deduped)
+
+
 if __name__ == "__main__":
+    run_loop()
     main()

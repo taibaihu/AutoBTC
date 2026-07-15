@@ -2322,6 +2322,13 @@ def api_bb_ride_execution():
             return json_ok({"orders": {}, "positions": {}, "closed_positions": []})
         state = json.loads(state_path.read_text(encoding="utf-8"))
         now = time.time()
+        # 过滤 _synced 持仓（非本策略开仓，从交易所同步的旧持仓）
+        filtered_positions = {}
+        for key, p in state.get("positions", {}).items():
+            if p.get("_synced"):
+                continue
+            filtered_positions[key] = p
+        state["positions"] = filtered_positions
         for key, o in state.get("orders", {}).items():
             o["age_hours"] = round((now - o["placed_at"]) / 3600, 1)
             o["placed_at_str"] = datetime.fromtimestamp(o["placed_at"], tz=timezone(timedelta(hours=8))).strftime("%m-%d %H:%M")
@@ -2427,6 +2434,13 @@ def api_bb_ride_execution_okx():
             return json_ok({"orders": {}, "positions": {}, "closed_positions": []})
         state = json.loads(state_path.read_text(encoding="utf-8"))
         now = time.time()
+        # 过滤 _synced 持仓（非本策略开仓，从交易所同步的旧持仓）
+        filtered_positions = {}
+        for key, p in state.get("positions", {}).items():
+            if p.get("_synced"):
+                continue
+            filtered_positions[key] = p
+        state["positions"] = filtered_positions
         for key, o in state.get("orders", {}).items():
             o["age_hours"] = round((now - o["placed_at"]) / 3600, 1)
             o["placed_at_str"] = datetime.fromtimestamp(o["placed_at"], tz=timezone(timedelta(hours=8))).strftime("%m-%d %H:%M")
